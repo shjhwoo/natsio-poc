@@ -428,6 +428,8 @@ func handleMsg(msg jetstream.Msg) {
 
 		WSConn.WriteMessage(websocket.TextMessage, []byte(wsMsgContent))
 
+		msg.NakWithDelay(time.Second) // 메세지 처리 실패시 재시도
+
 		return
 	}
 
