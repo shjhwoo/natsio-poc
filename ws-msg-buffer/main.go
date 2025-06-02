@@ -238,8 +238,6 @@ func SendBufferedMsgs() error {
 		if err := json.Unmarshal([]byte(buffered_msg), &buffered_msg_data); err != nil {
 			log.Println("Error unmarshalling buffered message:", err)
 		}
-
-		Oldest_buffer_save_time = buffered_msg_data.Event_created_at
 	}
 
 	return nil
