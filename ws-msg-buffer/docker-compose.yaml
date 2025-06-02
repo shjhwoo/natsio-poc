@@ -1,0 +1,20 @@
+version: "3.5"
+
+services:
+  nats-hub-server-1:
+    image: nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf
+    command: "-c /etc/nats/nats.conf"
+
+  redis-replica-server:
+    image: redis:7.0
+    container_name: redis-replica-server
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass mgrsol123 --port 6379 --notify-keyspace-events Egx
+    restart: unless-stopped
+
