@@ -80,6 +80,12 @@ func main() {
 		time.Sleep(1 * time.Second)
 	}
 
+	stream.Purge(context.Background(), func(spr *jetstream.StreamPurgeRequest) error {
+		spr.Sequence = 3 // Purge from sequence 3 (앞에서부터 지우는데 지정한 Seq는 제외함. 즉 1, 2만 지워진다)
+		return nil
+	})
+	log.Println("Purged messages from sequence 3")
+
 	batchMessages, err := consumer.Fetch(5)
 	if err != nil {
 		log.Println("Error fetching messages:", err)
@@ -94,7 +100,7 @@ func main() {
 			return
 		}
 
-		log.Println("Received message:", string(msg.Data()), "on subject:", msg.Subject(), "sequence:", mt.Sequence, "timestamp:", mt.Timestamp)
+		log.Println("Received message:", string(msg.Data()), "on subject:", msg.Subject(), "sequence:", mt.Sequence.Stream, "timestamp:", mt.Timestamp)
 
 		clientSeenLastSeqno = mt.Sequence.Stream
 
