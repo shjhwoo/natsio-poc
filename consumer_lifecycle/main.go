@@ -39,13 +39,13 @@ func main() {
 		return
 	}
 
-	// consumerBeforeTimeOut, err := stream.Consumer(context.Background(), "status_consumer")
-	// if err != nil {
-	// 	log.Println("Error getting consumer before timeout:", err)
-	// 	return
-	// }
+	initStreamInfo, err := stream.Info(context.Background())
+	if err != nil {
+		log.Println("Error getting stream info:", err)
+		return
+	}
 
-	// log.Println("Consumer before timeout:", consumerBeforeTimeOut)
+	log.Println(initStreamInfo.State.Msgs, "messages in inital stream")
 
 	//컨슈머 만들어가지고
 	consumer, err := stream.CreateOrUpdateConsumer(context.Background(), jetstream.ConsumerConfig{
@@ -86,6 +86,7 @@ func main() {
 		return
 	}
 
+	var clientSeenLastSeqno uint64
 	for msg := range batchMessages.Messages() {
 		mt, err := msg.Metadata()
 		if err != nil {
@@ -94,6 +95,8 @@ func main() {
 		}
 
 		log.Println("Received message:", string(msg.Data()), "on subject:", msg.Subject(), "sequence:", mt.Sequence, "timestamp:", mt.Timestamp)
+
+		clientSeenLastSeqno = mt.Sequence.Stream
 
 		if err := msg.Ack(); err != nil {
 			log.Println("Error acknowledging message:", err)
@@ -149,6 +152,25 @@ func main() {
 		log.Println("Error creating or updating consumer:", err)
 		return
 	}
+
+	consumerInfo, err := reconnectedConsumer.Info(context.Background())
+	if err != nil {
+		log.Println("Error getting reconnectedConsumer info:", err)
+		return
+	}
+
+	//결론: NumPending을 쓰면 될거고, streamInfo.State.LastSeq - clientSeenLastSeqno 로 계산을 한 것과 동일하다
+	log.Println("Reconnected consumer info:", consumerInfo.NumPending, "pending messages", consumerInfo.NumAckPending, "ack pending messages") //Reconnected consumer info: 10 pending messages 0 ack pending messages
+
+	//스트림 꺼랑 비교해보자
+	streamInfo, err := stream.Info(context.Background())
+	if err != nil {
+		log.Println("Error getting stream info:", err)
+		return
+	}
+
+	calculatedPendingEventMessageCount := streamInfo.State.LastSeq - clientSeenLastSeqno
+	log.Println("Calculated pending event message count:", calculatedPendingEventMessageCount)
 
 	batchMessages2, err := reconnectedConsumer.Fetch(5)
 	if err != nil {
