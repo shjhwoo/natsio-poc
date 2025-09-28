@@ -1,17 +1,19 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // NATS 서버 주소 및 이벤트 주제 정의
 const natsURL = nats.DefaultURL
-const coreSubject = "events.internal.roomCreated"
+const coreSubject = "starfruit.eventSink.roomCreated"
 
 // 각 서비스별 큐 그룹 정의
 var serviceQueues = map[string]string{
@@ -34,6 +36,19 @@ func main() {
 	defer nc.Close()
 	log.Println("NATS 서버 연결 성공")
 
+	js, err := jetstream.New(nc)
+	if err != nil {
+		log.Fatalf("JetStream 초기화 실패: %v", err)
+	}
+
+	stream, err := js.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
+		Name:     "eventSink",
+		Subjects: []string{"starfruit.eventSink.>"},
+	})
+	if err != nil {
+		log.Fatalf("스트림 생성 실패: %v", err)
+	}
+
 	// 2. 구독자 셋업 (각 서비스당 2개의 인스턴스)
 	numInstancesPerService := 2
 	//totalSubscribers := len(serviceQueues) * numInstancesPerService
@@ -42,7 +57,7 @@ func main() {
 
 	for serviceName, queueName := range serviceQueues {
 		for i := 1; i <= numInstancesPerService; i++ {
-			go runSubscriber(serviceName, i, nc, queueName)
+			go runSubscriber(stream, serviceName, i, nc, queueName)
 		}
 	}
 
@@ -70,12 +85,20 @@ func main() {
 }
 
 // runSubscriber는 각 서비스의 개별 워커(인스턴스)를 실행합니다.
-func runSubscriber(serviceName string, instanceID int, nc *nats.Conn, queueName string) {
+func runSubscriber(stream jetstream.Stream, serviceName string, instanceID int, nc *nats.Conn, queueName string) {
+
+	consumer, err := stream.CreateOrUpdateConsumer(context.Background(), jetstream.ConsumerConfig{
+		Durable:   queueName,
+		AckPolicy: jetstream.AckExplicitPolicy,
+	})
+	if err != nil {
+		log.Fatalf("컨슈머 생성 실패: %v", err)
+	}
+
 	workerID := fmt.Sprintf("%s-%d", serviceName, instanceID)
 
-	// 핵심: QueueSubscribe를 사용하여 동일한 큐 그룹으로 묶습니다.
-	_, err := nc.QueueSubscribe(coreSubject, queueName, func(m *nats.Msg) {
-		defer wg.Done()
+	consumeCtx, err := consumer.Consume(func(msg jetstream.Msg) {
+		defer msg.Ack()
 
 		// 처리 시간 시뮬레이션: 워커 ID에 따라 처리 시간을 다르게 설정하여 부하 분산 확인
 		processTime := time.Duration((instanceID*2+len(serviceName))%100+50) * time.Millisecond
@@ -83,13 +106,12 @@ func runSubscriber(serviceName string, instanceID int, nc *nats.Conn, queueName 
 
 		// 큐 그룹 이름을 출력하여 해당 메시지가 어떤 그룹에 의해 처리되었는지 확인합니다.
 		log.Printf("[처리 완료] Worker: %s | Queue Group: %s | Data: %s | Time: %v",
-			workerID, queueName, string(m.Data), processTime)
-	})
+			workerID, queueName, string(msg.Data()), processTime)
 
+	})
 	if err != nil {
-		log.Printf("Worker %s 구독 실패: %v", workerID, err)
-		return
+		log.Fatalf("메시지 소비 실패: %v", err)
 	}
 
-	// 이 고루틴은 main 함수의 wg.Wait()에 의해 프로그램이 종료될 때까지 메시지를 대기합니다.
+	log.Println("구독자:", workerID, "큐 그룹:", queueName, "consumeContext:", consumeCtx)
 }
