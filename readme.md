@@ -1,1 +1,1 @@
-laboratory code for nats.io functions and APIs
+NATS io의 개념을 poc 코드로 확인해 볼 수 있는 레포지토리입니다. 
