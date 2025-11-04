@@ -27,7 +27,6 @@ go run main.go
 PS C:\Users\User\Desktop\starfruit-nats-lab\slowConsumer> go run .\main.go      
 2025/11/04 18:50:05.701848 NATS에 연결되었습니다: nats://127.0.0.1:4222
 2025/11/04 18:50:05.720466 구독 시작. 이제 publisher를 실행하여 메시지를 보내세요. slow-group
-2025/11/04 18:50:05.720466 총 500개의 메시지를 빠르게 발행합니다...
 ...(중략)...
 Falling behind with 10 pending messages on subject "orders.create".
 2025/11/04 18:54:35.744371 메시지 수신 [4351] - 처리 완료
