@@ -21,7 +21,7 @@ docker-compose up -d
 go run main.go
 ```
 
-덧붙여 81번째 줄을 주석 해제해서, slow consumer가 해제되는 것도 확인해보세요
+덧붙여 'err = sub.SetPendingLimits(20000, 50*1024*1024)' 줄을 주석 해제해서, slow consumer가 해제되는 것도 확인해보세요
 
 ## 실행 결과 예시
 
@@ -84,13 +84,17 @@ slow consumer가 감지되면, 서버에 아래와 같은 로그가 보입니다
 
 ## Slow Consumer 해결 방법
 
-1. 구독하는 Subject를 구체화합니다
+### 1. 구독하는 Subject를 구체화합니다
 
 - 와일드카드 토큰(\*, >) 대신, 구체적인 token을 사용해서 받아들이는 메세지의 수를 줄여봅니다.
 
 - 예를 들어 포괄적인 Sensors.> 같은 subject 보다는 Sensors.South, Sensors.North 와 같이 구체적인 subject를 구독하도록 하여 부하를 분산시킬 수 있어요.
 
-2. consumer의 maxPendingMsgs, maxPendingBytes 설정을 늘려봅니다.
+### 2. Subject를 구독하는 인스턴스의 수를 증가시켜 봅니다. 
+
+http 요청을 더 많이 수용하기 위해 로드밸런서 뒤에 더 많은 서버 인스턴스 수를 배치하는 것과 같은 원리에요.
+
+### 3. consumer의 maxPendingMsgs, maxPendingBytes 설정을 늘려봅니다.
 
 - 이 옵션은 subscription 설정에서 할 수 있습니다
 
@@ -110,7 +114,7 @@ slow consumer가 감지되면, 서버에 아래와 같은 로그가 보입니다
 	}
 ```
 
-3. slow consumer 에러를 로깅하는 방법도 권장합니다
+### 4. slow consumer 에러를 로깅하는 방법도 권장합니다
 
 - nats connection 옵션에 다음을 추가해주세요.
 
