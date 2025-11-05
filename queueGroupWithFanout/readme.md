@@ -29,6 +29,8 @@ nats queue group(QueueSubscribe)을 이루고 있기 때문에
 ```
 
 ###  관련 문서
+
+https://techblog.woowahan.com/7835/
 https://www.notion.so/15ab87aa3ee080e6a105ce72ecda2e3f?source=copy_link#27db87aa3ee08080af29fd7ba82c7d27
 
 ## 실행방법
