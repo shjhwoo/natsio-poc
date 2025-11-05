@@ -24,15 +24,13 @@ func main() {
 }
 
 func ConnectNats() {
-	// 1. NATS 연결 설정
 	nc, err := nats.Connect(
 		NatsURL,
-		// 📢 v1.47.0에서 디버그 로그가 없으므로, 핸들러로 상태 변화를 포착합니다.
 		nats.DisconnectHandler(func(nc *nats.Conn) {
 			log.Printf("🚨 연결 끊김 감지! 최종 에러: %v", nc.LastError())
 		}),
 		nats.ReconnectHandler(func(nc *nats.Conn) {
-			log.Println("✅ 연결 복구 성공!")
+			log.Println("✅ 연결 복구 성공! - 재연결 시 사용한 url: ", nc.ConnectedUrl())
 		}),
 		nats.MaxReconnects(5),
 		nats.ErrorHandler(natsErrHandler),
@@ -50,10 +48,10 @@ func natsErrHandler(nc *nats.Conn, sub *nats.Subscription, natsErr error) {
 	if natsErr == nats.ErrSlowConsumer {
 		pendingMsgs, _, err := sub.Pending()
 		if err != nil {
-			fmt.Printf("couldn't get pending messages: %v", err)
+			fmt.Printf("처리하지 못하고 버퍼에 쌓여있는 메세지 수 확인 오류: %v", err)
 			return
 		}
-		fmt.Printf("Falling behind with %d pending messages on subject %q.\n", pendingMsgs, sub.Subject)
+		fmt.Printf("%d개의 메세지가 subject %s에 대해 처리되지 못하고 버퍼에 쌓여있음\n", pendingMsgs, sub.Subject)
 		// Log error, notify operations...
 
 	}
@@ -64,7 +62,7 @@ func StartQueueSubscribers() {
 	// 2. 구독 설정 (QueueSubscribe를 사용하여 여러 워커 가정)
 	// 구독이 NATS 클라이언트의 내부 버퍼를 사용할 때 문제가 발생합니다.
 	sub, err := natsConn.QueueSubscribe(Subject, "slow-group", func(msg *nats.Msg) {
-		// 📢 이 핸들러는 메시지 하나당 500ms를 소비하며 '느린 작업'을 시뮬레이션합니다.
+		// 📢 이 핸들러는 메시지 하나당 5000ms를 소비하며 '느린 작업'을 시뮬레이션합니다.
 		log.Printf("메시지 수신 [%s] - 처리 시작", msg.Header.Get("index"))
 		time.Sleep(5000 * time.Millisecond) // 🐌 느린 작업 시뮬레이션
 		log.Printf("메시지 수신 [%s] - 처리 완료", msg.Header.Get("index"))
