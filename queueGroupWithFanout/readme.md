@@ -30,9 +30,9 @@ nats queue group(QueueSubscribe)을 이루고 있기 때문에
 
 ###  관련 문서
 
-* ![회원시스템 이벤트기반 아키텍처 구축하기](https://techblog.woowahan.com/7835/#:~:text=%EC%9A%B0%EB%A6%AC%EA%B0%80%20%EB%B0%9C%ED%96%89%ED%95%B4%EC%95%BC%ED%95%A0%20%EC%9D%B4%EB%B2%A4%ED%8A%B8%EB%8A%94,%EC%8A%A4%ED%86%A0%EB%B0%8D%20Event%20Storming)
+* [회원시스템 이벤트기반 아키텍처 구축하기](https://techblog.woowahan.com/7835/#:~:text=%EC%9A%B0%EB%A6%AC%EA%B0%80%20%EB%B0%9C%ED%96%89%ED%95%B4%EC%95%BC%ED%95%A0%20%EC%9D%B4%EB%B2%A4%ED%8A%B8%EB%8A%94,%EC%8A%A4%ED%86%A0%EB%B0%8D%20Event%20Storming)
 
-* ![starfruit 적용사례](https://www.notion.so/15ab87aa3ee080e6a105ce72ecda2e3f?source=copy_link#27db87aa3ee08080af29fd7ba82c7d27)
+* [starfruit 적용사례](https://www.notion.so/15ab87aa3ee080e6a105ce72ecda2e3f?source=copy_link#27db87aa3ee08080af29fd7ba82c7d27)
 
 ## 실행방법
 
