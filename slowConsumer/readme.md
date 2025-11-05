@@ -87,6 +87,54 @@ You can distribute work further through the subject namespace, with some foretho
 For a simple example, if you have a service that receives telemetry data from IoT devices located throughout a city, you can publish to a subject namespace like Sensors.North, Sensors.South, Sensors.East and Sensors.West. Initially, you'll subscribe to Sensors.> to process everything in one consumer. As your enterprise grows and data rates exceed what one consumer can handle, you can replace your single consumer with four consuming applications to subscribe to each subject representing a smaller segment of your data. Note that your publishing applications remain untouched.
 ```
 
+2. consumer의 maxPendingMsgs, maxPendingBytes 설정을 늘려봅니다. 이 옵션은 subscription 설정에서 할 수 있습니다
+```
+	sub, err := nc.InternalConn.QueueSubscribe(
+		subject,
+		nc.Env.NATS_INTERNAL_PUB_QUEUE,
+		result.handleInternalEventMessage,
+	)
+	if err != nil {
+		return nil, errutil.WrapWithStack(err)
+	}
+
+	if err := sub.SetPendingLimits(nc.Env.NATS_INTERNAL_EVENT_MAX_PENDING_MSGS, nc.Env.NATS_INTERNAL_EVENT_MAX_PENDING_BYTES); err != nil {
+		return nil, errutil.WrapWithStack(err)
+	}
+```
+
+3. slow consumer 에러를 로깅하는 방법도 권장합니다 
+nats connection 옵션에 다음을 추가해주세요.
+```
+ option := []nats.Option{
+    nats.ErrorHandler(natsErrHandler), -- slow consumer 에러 감지 시, 에러를 로깅할 수 있어요. 
+   
+    nats.DisconnectHandler(func(nc *nats.Conn) { --slow consumer 로 인지되어 nats server에서 강제로 연결을 차단한 경우, 이를 확인할 수 있게 해줍니다
+        fmt.Printf("NATS연결이 잠시 끊겼음!!! Last Error: %v\n", nc.LastError())
+    }),
+   
+    nats.ReconnectHandler(func(nc *nats.Conn) { -slow consumer가 해결되어 nats server에 다시 연결 성공한 경우 이를 확인하게 해줍니다
+        fmt.Printf("NATS 연결 복구 성공! 새로운 서버 주소: %s\n", nc.ConnectedUrl())
+    }),
+ }
+
+func natsErrHandler(nc *nats.Conn, sub *nats.Subscription, natsErr error) {
+	fmt.Printf("natsErrHandler error: %v\n", natsErr)
+	if natsErr == nats.ErrSlowConsumer {
+		pendingMsgs, _, err := sub.Pending()
+		if err != nil {
+			fmt.Printf("couldn't get pending messages: %v", err)
+			return
+		}
+		fmt.Printf("Falling behind with %d pending messages on subject %q.\n", pendingMsgs, sub.Subject)
+		// Log error, notify operations...
+
+	}
+	// check for other errors
+}
+
+```
+
 ## references
 
 https://docs.nats.io/running-a-nats-service/nats_admin/slow_consumers

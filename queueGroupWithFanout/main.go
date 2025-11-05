@@ -30,6 +30,7 @@ var numMessages = 15
 
 func main() {
 	log.Println("--- NATS Queue Group POC start ---")
+	wg.Add(numMessages * len(serviceQueues))
 
 	// 1. NATS 연결
 	nc, err := nats.Connect(natsURL)
@@ -46,15 +47,15 @@ func main() {
 
 	stream, err := js.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
 		Name:      "eventSink",
-		Subjects:  []string{"starfruit.eventSink.>"},
+		Subjects:  []string{"starfruit.internal.event"},
 		Retention: jetstream.InterestPolicy,
 	})
 	if err != nil {
 		log.Fatalf("스트림 생성 실패: %v", err)
 	}
 
-	// 2. 구독자 셋업 (각 서비스당 2개의 인스턴스)
-	numInstancesPerService := 2
+	// 2. 구독자 셋업 (각 서비스당 3개의 인스턴스)
+	numInstancesPerService := 3
 
 	log.Printf("총 %d개 서비스 (%d개 큐 그룹), 각 서비스당 %d개 인스턴스 실행 중...", len(serviceQueues), len(serviceQueues), numInstancesPerService)
 
@@ -78,21 +79,15 @@ func main() {
 	// 5. 모든 구독자가 작업을 처리할 때까지 대기
 	wg.Wait()
 	log.Println("\n--- POC 종료 (총 45개 작업 완료) ---")
-
-	si, err := stream.Info(context.Background())
-	if err != nil {
-		log.Fatalf("스트림 정보 조회 실패: %v", err)
-	}
-
-	log.Println("각 컨슈머가 처리후 스트림에 남아있는 메세지 수::", si.State.Msgs)
 }
 
 // runSubscriber는 각 서비스의 개별 워커(인스턴스)를 실행합니다.
 func runSubscriber(wg *sync.WaitGroup, stream jetstream.Stream, serviceName string, instanceID int, queueName string) {
 
 	consumer, err := stream.CreateOrUpdateConsumer(context.Background(), jetstream.ConsumerConfig{
-		Durable:   queueName,
-		AckPolicy: jetstream.AckExplicitPolicy,
+		Durable:       queueName,
+		AckPolicy:     jetstream.AckExplicitPolicy,
+		FilterSubject: coreSubject,
 	})
 	if err != nil {
 		log.Fatalf("컨슈머 생성 실패: %v", err)
@@ -112,8 +107,7 @@ func runSubscriber(wg *sync.WaitGroup, stream jetstream.Stream, serviceName stri
 		time.Sleep(processTime)
 
 		// ******큐 그룹 이름을 출력하여 해당 메시지가 어떤 그룹에 의해 처리되었는지 확인합니다.
-		log.Printf("[처리 완료] Worker: %s | Queue Group: %s | Data: %s | Time: %v",
-			workerID, queueName, string(msg.Data()), processTime)
+		log.Printf("[처리 완료] Worker: %s | Queue Group: %s | Data: %s | Time: %v", workerID, queueName, string(msg.Data()), processTime)
 
 	})
 	if err != nil {

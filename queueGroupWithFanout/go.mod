@@ -1,4 +1,4 @@
-module queueGroup
+module queueGroupWithFanout
 
 go 1.24.0
 
