@@ -13,7 +13,8 @@ import (
 const natsURL = "nats://localhost:4228"
 
 const StreamName = "scheduledEventSink"
-const coreSubject = "schedules.*"
+const coreSubjectPrefix = "schedules.pending"
+const onProcessSubject = "schedules.onProcess"
 const republishSubjectForQueueSubscription = "starfruit.internal.pub.event"
 
 var NC *nats.Conn
@@ -58,12 +59,12 @@ func createSchedulerStream() {
 	_, err := JS.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
 		Name:              StreamName,
 		Storage:           jetstream.FileStorage,
-		Subjects:          []string{coreSubject, "schedules"},
+		Subjects:          []string{fmt.Sprintf("%s.*", coreSubjectPrefix), onProcessSubject},
 		Retention:         jetstream.LimitsPolicy,
 		AllowMsgSchedules: true, // 스케줄된 메세지 허용
 		AllowMsgTTL:       true, // 스케줄된 메세지 TTL 허용
 		RePublish: &jetstream.RePublish{
-			Source:      "schedules",
+			Source:      onProcessSubject,
 			Destination: republishSubjectForQueueSubscription,
 		},
 	})
@@ -121,9 +122,9 @@ func publishScheduledChatMessageToSchedulerStream(currentTime time.Time) {
 			Header: nats.Header{
 				"Nats-Schedule":        []string{fmt.Sprintf("@at %s", scheduledAt.Format(time.RFC3339))},
 				"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)}, // TTL 설정
-				"Nats-Schedule-Target": []string{"schedules"},                       // Target 주제 설정
+				"Nats-Schedule-Target": []string{onProcessSubject},                  // Target 주제 설정
 			},
-			Subject: fmt.Sprintf("schedules.%d", time.Now().UnixNano()), // 원본 발행 주제
+			Subject: fmt.Sprintf("%s.%d", coreSubjectPrefix, time.Now().UnixNano()), // 원본 발행 주제
 			Data:    []byte(fmt.Sprintf("This is a scheduled task message %d", idx)),
 		})
 		if err != nil {
