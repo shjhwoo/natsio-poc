@@ -120,8 +120,8 @@ func publishScheduledChatMessageToSchedulerStream(currentTime time.Time) {
 		pubAck, err := JS.PublishMsg(context.Background(), &nats.Msg{
 			Header: nats.Header{
 				"Nats-Schedule":        []string{fmt.Sprintf("@at %s", scheduledAt.Format(time.RFC3339))},
-				"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime+5)}, // 넉넉하게 TTL 설정
-				"Nats-Schedule-Target": []string{"schedules"},                         // Target 주제 설정
+				"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)}, // TTL 설정
+				"Nats-Schedule-Target": []string{"schedules"},                       // Target 주제 설정
 			},
 			Subject: fmt.Sprintf("schedules.%d", time.Now().UnixNano()), // 원본 발행 주제
 			Data:    []byte(fmt.Sprintf("This is a scheduled task message %d", idx)),
