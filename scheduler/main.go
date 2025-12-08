@@ -117,27 +117,38 @@ func queueSubscribeScheduledMessageEvent() {
 
 func publishScheduledChatMessageToSchedulerStream(currentTime time.Time) {
 	for idx := range 3 {
-		scheduledAt := currentTime.Add(10 * time.Second)
-		remainingTime := int(scheduledAt.Sub(currentTime).Seconds())
 
-		pubAck, err := JS.PublishMsg(context.Background(), &nats.Msg{
-			Header: nats.Header{
-				"Nats-Schedule":        []string{fmt.Sprintf("@at %s", scheduledAt.Format(time.RFC3339))},
-				"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)}, // TTL 설정
-				"Nats-Schedule-Target": []string{onProcessSubject},                  // Target 주제 설정
-			},
-			Subject: fmt.Sprintf("%s.1234", coreSubjectPrefix), // 원본 발행 주제, //fmt.Sprintf("%s.%d", coreSubjectPrefix, time.Now().UnixNano()), // 원본 발행 주제
-			Data:    []byte(fmt.Sprintf("This is a scheduled task message %d", idx)),
-		})
-		if err != nil {
-			log.Fatalf("스케줄된 메세지 발행 실패: %v", err)
+		var scheduleId = fmt.Sprintf("ULID_%d", idx+1)
+		var modifyCount = 3
+
+		for i := 1; i <= modifyCount; i++ {
+
+			time.Sleep(1 * time.Second)
+
+			//하나의 메세지 발행해놓고 5초씩 scheduledAt을 앞당겨보자. 항상 최종버전의 메세지만 남아있어야 한다.
+			scheduledAt := currentTime.Add(time.Duration(30-5*i) * time.Second)
+			remainingTime := int(scheduledAt.Sub(currentTime).Seconds())
+
+			pubAck, err := JS.PublishMsg(context.Background(), &nats.Msg{
+				Header: nats.Header{
+					"Nats-Schedule":        []string{fmt.Sprintf("@at %s", scheduledAt.Format(time.RFC3339))},
+					"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)}, // TTL 설정
+					"Nats-Schedule-Target": []string{onProcessSubject},                  // Target 주제 설정
+				},
+				Subject: fmt.Sprintf("%s.%s", coreSubjectPrefix, scheduleId),
+				Data:    []byte(fmt.Sprintf("This is a scheduled task message with Id %s", scheduleId)),
+			})
+			if err != nil {
+				log.Fatalf("스케줄된 메세지 발행 실패: %v", err)
+			}
+
+			if i == modifyCount {
+				log.Printf("최종 버전의 스케줄된 메세지(%s) 발행 성공: %+v 메세지 발행 예약 시각: %s (예정까지 %d초)", scheduleId, pubAck, scheduledAt.Format(time.RFC3339), remainingTime)
+			}
 		}
-
-		log.Printf("스케줄된 메세지 발행 성공: %+v 메세지 발행 예약 시각: %s (예정까지 %d초)", pubAck, scheduledAt.Format(time.RFC3339), remainingTime)
-
-		time.Sleep(1 * time.Second)
 	}
 
+	//스트림 정책에 따라서 메세지는 최종 3개로만 남아있어야 한다
 	streamInfo, err := JS.Stream(context.Background(), StreamName)
 	if err == nil {
 		log.Printf("📢 발행 후 Stream 상태: Messages: %d, Bytes: %d", streamInfo.CachedInfo().State.Msgs, streamInfo.CachedInfo().State.Bytes)
