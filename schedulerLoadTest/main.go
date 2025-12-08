@@ -1,0 +1,167 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+var NumScheduledChatMessages = 1000
+var ModifyCountPerMessage = 10
+var InitDelayTime int
+
+const natsURL = "nats://localhost:4222,nats://localhost:4223,nats://localhost:4224"
+const StreamName = "scheduledEventSink"
+const coreSubjectPrefix = "schedules.pending"
+const onProcessSubject = "schedules.onProcess"
+const republishSubjectForQueueSubscription = "internalEvent"
+
+var NC *nats.Conn
+var JS jetstream.JetStream
+
+func main() {
+
+	setLoadTestArguments()
+
+	ConnectNats()
+
+	defer NC.Close()
+
+	createSchedulerStream()
+
+	queueSubscribeScheduledMessageEvent()
+
+	publishScheduledChatMessageToSchedulerStream()
+
+	//TODO 베어메탈에 nats 서버 셋업 및 연결
+
+	select {}
+}
+
+func setLoadTestArguments() {
+	args := os.Args
+
+	log.Println("args: ", args)
+	//         0      1    2
+	// go run main.go 1000 10
+	if len(args) >= 3 {
+		numScheduledChatMessagesInt, err := strconv.Atoi(args[1])
+		if err != nil {
+			log.Fatalf("첫번째 인자(예약메세지수) 변환 실패: %v", err)
+		}
+		NumScheduledChatMessages = numScheduledChatMessagesInt
+
+		modifyCountPerMessageInt, err := strconv.Atoi(args[2])
+		if err != nil {
+			log.Fatalf("두번째 인자(메세지수정횟수) 변환 실패: %v", err)
+		}
+		ModifyCountPerMessage = modifyCountPerMessageInt
+
+		InitDelayTime = ModifyCountPerMessage * ModifyCountPerMessage
+	}
+
+}
+
+func ConnectNats() {
+	// ... (연결 함수는 동일)
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		log.Fatalf("NATS 연결 실패: %v", err)
+	}
+
+	NC = nc
+	log.Println("NATS 서버 연결 성공")
+
+	js, err := jetstream.New(NC)
+	if err != nil {
+		log.Fatalf("JetStream 초기화 실패: %v", err)
+	}
+
+	JS = js
+}
+
+func createSchedulerStream() {
+	_, err := JS.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
+		Name:              StreamName,
+		Storage:           jetstream.FileStorage,
+		Subjects:          []string{fmt.Sprintf("%s.*", coreSubjectPrefix), onProcessSubject},
+		Retention:         jetstream.LimitsPolicy, //- 수정 및 삭제 시 필수 옵션
+		Discard:           jetstream.DiscardOld,   //- 수정 및 삭제 시 필수 옵션
+		MaxMsgsPerSubject: 1,                      //- 수정 및 삭제 시 필수 옵션
+		AllowMsgSchedules: true,                   // 스케줄된 메세지 허용
+		AllowMsgTTL:       true,                   // 스케줄된 메세지 TTL 허용
+		RePublish: &jetstream.RePublish{
+			Source:      onProcessSubject,
+			Destination: republishSubjectForQueueSubscription,
+		},
+		Replicas: 3,
+	})
+	if err != nil {
+		log.Fatalf("스트림 생성 실패: %v", err)
+	}
+
+	streamInfo, err := JS.Stream(context.Background(), StreamName)
+	if err == nil {
+		log.Printf("📢 발행 전 Stream 상태: Messages: %d, Bytes: %d", streamInfo.CachedInfo().State.Msgs, streamInfo.CachedInfo().State.Bytes)
+	}
+}
+
+// 스케줄러 stream에서 예약된 시각에 발행되는 메세지를 큐 그룹에게 전달하려면,
+// 스케줄러 스트림에 repub 설정을 하고, 신규 subject(repub) 에다가 큐 구독자를 생성해야 합니다.
+func queueSubscribeScheduledMessageEvent() {
+	for idx := range 2 {
+		sub, err := NC.QueueSubscribe(republishSubjectForQueueSubscription, "SCHEDULEQUEUE", func(msg *nats.Msg) {
+			log.Printf("%d 번 sub에서, repub 메세지 수신 완료: %s %v %s", idx, msg.Subject, msg.Header, string(msg.Data))
+			//TODO Latency 측정 로직 추가
+		})
+		if err != nil {
+			log.Fatalf("컨슈머 생성 실패: %v", err)
+		}
+		log.Println("repub 이벤트수신을 위한 sub 생성완: ", sub)
+	}
+}
+
+func publishScheduledChatMessageToSchedulerStream() {
+	for idx := range NumScheduledChatMessages {
+
+		var scheduleId = fmt.Sprintf("ULID_%d", idx+1)
+
+		for i := 1; i <= ModifyCountPerMessage; i++ {
+
+			currentTime := time.Now()
+
+			//하나의 메세지 발행해놓고 5초씩 scheduledAt을 앞당겨보자. 항상 최종버전의 메세지만 남아있어야 한다.
+			scheduledAt := currentTime.Add(time.Duration(InitDelayTime-ModifyCountPerMessage*i) * time.Second)
+			remainingTime := int(scheduledAt.Sub(currentTime).Seconds())
+
+			pubAck, err := JS.PublishMsg(context.Background(), &nats.Msg{
+				Header: nats.Header{
+					"Nats-Schedule":        []string{fmt.Sprintf("@at %s", scheduledAt.Format(time.RFC3339))},
+					"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)}, // TTL 설정
+					"Nats-Schedule-Target": []string{onProcessSubject},                  // Target 주제 설정
+				},
+				Subject: fmt.Sprintf("%s.%s", coreSubjectPrefix, scheduleId),
+				Data:    []byte(fmt.Sprintf("This is a scheduled task message with Id %s", scheduleId)),
+			})
+			if err != nil {
+				log.Fatalf("스케줄된 메세지 발행 실패: %v", err)
+			}
+
+			if i == ModifyCountPerMessage {
+				log.Printf("최종 버전의 스케줄된 메세지(%s) 발행 성공: %+v 메세지 발행 예약 시각: %s (예정까지 %d초)", scheduleId, pubAck, scheduledAt.Format(time.RFC3339), remainingTime)
+			}
+		}
+	}
+
+	//스트림 정책에 따라서 메세지는 최종 3개로만 남아있어야 한다
+	streamInfo, err := JS.Stream(context.Background(), StreamName)
+	if err == nil {
+		log.Printf("📢 발행 후 Stream 상태: Messages: %d, Bytes: %d", streamInfo.CachedInfo().State.Msgs, streamInfo.CachedInfo().State.Bytes)
+	}
+}
