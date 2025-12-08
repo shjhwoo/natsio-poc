@@ -60,9 +60,11 @@ func createSchedulerStream() {
 		Name:              StreamName,
 		Storage:           jetstream.FileStorage,
 		Subjects:          []string{fmt.Sprintf("%s.*", coreSubjectPrefix), onProcessSubject},
-		Retention:         jetstream.LimitsPolicy,
-		AllowMsgSchedules: true, // 스케줄된 메세지 허용
-		AllowMsgTTL:       true, // 스케줄된 메세지 TTL 허용
+		Retention:         jetstream.LimitsPolicy, //- 수정 및 삭제 시 필수 옵션
+		Discard:           jetstream.DiscardOld,   //- 수정 및 삭제 시 필수 옵션
+		MaxMsgsPerSubject: 1,                      //- 수정 및 삭제 시 필수 옵션
+		AllowMsgSchedules: true,                   // 스케줄된 메세지 허용
+		AllowMsgTTL:       true,                   // 스케줄된 메세지 TTL 허용
 		RePublish: &jetstream.RePublish{
 			Source:      onProcessSubject,
 			Destination: republishSubjectForQueueSubscription,
@@ -114,7 +116,7 @@ func queueSubscribeScheduledMessageEvent() {
 }
 
 func publishScheduledChatMessageToSchedulerStream(currentTime time.Time) {
-	for idx := range 10 {
+	for idx := range 3 {
 		scheduledAt := currentTime.Add(10 * time.Second)
 		remainingTime := int(scheduledAt.Sub(currentTime).Seconds())
 
@@ -124,7 +126,7 @@ func publishScheduledChatMessageToSchedulerStream(currentTime time.Time) {
 				"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)}, // TTL 설정
 				"Nats-Schedule-Target": []string{onProcessSubject},                  // Target 주제 설정
 			},
-			Subject: fmt.Sprintf("%s.%d", coreSubjectPrefix, time.Now().UnixNano()), // 원본 발행 주제
+			Subject: fmt.Sprintf("%s.1234", coreSubjectPrefix), // 원본 발행 주제, //fmt.Sprintf("%s.%d", coreSubjectPrefix, time.Now().UnixNano()), // 원본 발행 주제
 			Data:    []byte(fmt.Sprintf("This is a scheduled task message %d", idx)),
 		})
 		if err != nil {
