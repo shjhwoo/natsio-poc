@@ -15,3 +15,8 @@ Publish the latest message for a subject on a schedule, to be used for data samp
 2. https://nats.io/blog/nats-server-2.12-release/#delayed-message-scheduling
 
 
+## 실행방법
+
+docker-compose up -d 
+
+go run main.go
