@@ -4,7 +4,7 @@ services:
   nats-hub-server-1:
     image: nats
     ports:
-      - "4222:4222"
+      - "4228:4222"
       - "8222:8222"
     volumes:
       - ./nats.conf:/etc/nats/nats.conf
