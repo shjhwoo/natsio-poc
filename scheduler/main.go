@@ -10,7 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const natsURL = "nats://localhost:4228"
+const natsURL = "nats://localhost:4222,nats://localhost:4223,nats://localhost:4224"
 
 const StreamName = "scheduledEventSink"
 const coreSubjectPrefix = "schedules.pending"
@@ -26,6 +26,8 @@ func main() {
 	defer NC.Close()
 
 	createSchedulerStream()
+
+	getScheduledMessageFromConsumer()
 
 	currentTime := time.Now()
 	log.Printf("현재 시각: %s", currentTime.Format(time.RFC3339))
@@ -69,6 +71,7 @@ func createSchedulerStream() {
 			Source:      onProcessSubject,
 			Destination: republishSubjectForQueueSubscription,
 		},
+		Replicas: 3,
 	})
 	if err != nil {
 		log.Fatalf("스트림 생성 실패: %v", err)
@@ -85,7 +88,7 @@ func createSchedulerStream() {
 func getScheduledMessageFromConsumer() {
 	consumer, err := JS.CreateOrUpdatePushConsumer(context.Background(), StreamName, jetstream.ConsumerConfig{
 		DeliverSubject: nats.NewInbox(),
-		FilterSubjects: []string{"schedules"},
+		FilterSubjects: []string{onProcessSubject},
 	})
 	if err != nil {
 		log.Fatalf("컨슈머 생성 실패: %v", err)
