@@ -33,6 +33,12 @@ var KST *time.Location
 
 var wg sync.WaitGroup // <--- 추가
 
+var FirstScheduledAt time.Time
+var LastScheduledAt time.Time
+var totalLatency time.Duration
+var maxLatency time.Duration
+var messageCount int64
+
 func main() {
 
 	kst, err := time.LoadLocation("Asia/Seoul")
@@ -61,16 +67,17 @@ func main() {
 	log.Println("--- 모든 메시지 발행 완료 및 수신 대기 시작 ---")
 
 	// 모든 메시지 처리가 완료될 때까지 대기
-	wg.Wait() // <--- 추가: 모든 wg.Done() 호출을 기다림
+	wg.Wait()
 
 	log.Println("--- 모든 메시지 수신 및 집계 완료. 채널 닫기 ---")
 	close(latencyChan)
 
-	if err := JS.DeleteStream(context.Background(), StreamName); err != nil {
-		log.Printf("기존 스트림 삭제 실패: %v", err)
-	}
+	schDuration := LastScheduledAt.Sub(FirstScheduledAt)
 
-	select {}
+	log.Printf("분당 %d건의 예약메세지 발행 및 수신 테스트 완료:", NumScheduledChatMessages/int(schDuration.Minutes()))
+
+	avgLatency := totalLatency / time.Duration(messageCount)
+	log.Println("📢 Latency Aggregator - avgLatency: ", avgLatency, "maxLatency", maxLatency, "count: ", messageCount)
 }
 
 func setLoadTestArguments() {
@@ -92,7 +99,7 @@ func setLoadTestArguments() {
 		}
 		ModifyCountPerMessage = modifyCountPerMessageInt
 
-		InitDelayTime = ModifyCountPerMessage * (ModifyCountPerMessage + 1) //초
+		InitDelayTime = ModifyCountPerMessage + 1
 	}
 
 }
@@ -146,9 +153,6 @@ func createSchedulerStream() {
 }
 
 func latencyAggregator() {
-	var totalLatency time.Duration
-	var maxLatency time.Duration
-	var messageCount int64
 
 	// 채널이 닫힐 때까지 반복하며 값을 수신합니다.
 	for latency := range latencyChan {
@@ -167,8 +171,6 @@ func latencyAggregator() {
 		messageCount++
 	}
 
-	avgLatency := totalLatency / time.Duration(messageCount)
-	log.Println("📢 Latency Aggregator - avgLatency: ", avgLatency, "maxLatency", maxLatency, "count: ", messageCount)
 }
 
 func queueSubscribeScheduledMessageEvent() {
@@ -213,7 +215,15 @@ func publishScheduledChatMessageToSchedulerStream() {
 
 		for mc := 1; mc <= ModifyCountPerMessage; mc++ {
 
-			scheduledAt := currentTime.Add(time.Duration(InitDelayTime-ModifyCountPerMessage*mc) * time.Second)
+			scheduledAt := currentTime.Add(time.Duration(InitDelayTime-mc) * time.Minute)
+
+			if idx == 0 && mc == ModifyCountPerMessage {
+				FirstScheduledAt = scheduledAt
+			}
+			if idx == NumScheduledChatMessages-1 && mc == ModifyCountPerMessage {
+				LastScheduledAt = scheduledAt
+			}
+
 			remainingTime := int(scheduledAt.Sub(currentTime).Seconds())
 
 			msg := MessageContent{
