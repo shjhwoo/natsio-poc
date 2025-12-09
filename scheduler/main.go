@@ -133,13 +133,11 @@ func publishScheduledChatMessageToSchedulerStream(currentTime time.Time) {
 
 			//하나의 메세지 발행해놓고 5초씩 scheduledAt을 앞당겨보자. 항상 최종버전의 메세지만 남아있어야 한다.
 			scheduledAt := currentTime.Add(time.Duration(30-5*i) * time.Second)
-			remainingTime := int(scheduledAt.Sub(currentTime).Seconds())
-
 			pubAck, err := JS.PublishMsg(context.Background(), &nats.Msg{
 				Header: nats.Header{
 					"Nats-Schedule":        []string{fmt.Sprintf("@at %s", scheduledAt.Format(time.RFC3339))},
-					"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)}, // TTL 설정
-					"Nats-Schedule-Target": []string{onProcessSubject},                  // Target 주제 설정
+					"Nats-Schedule-TTL":    []string{"5s"},             // TTL 설정 (메세지 발행 후 보관을 하고 있을 기간을 의미**)
+					"Nats-Schedule-Target": []string{onProcessSubject}, // Target 주제 설정
 				},
 				Subject: fmt.Sprintf("%s.%s", coreSubjectPrefix, scheduleId),
 				Data:    []byte(fmt.Sprintf("This is a scheduled task message with Id %s", scheduleId)),
@@ -149,7 +147,7 @@ func publishScheduledChatMessageToSchedulerStream(currentTime time.Time) {
 			}
 
 			if i == modifyCount {
-				log.Printf("최종 버전의 스케줄된 메세지(%s) 발행 성공: %+v 메세지 발행 예약 시각: %s (예정까지 %d초)", scheduleId, pubAck, scheduledAt.Format(time.RFC3339), remainingTime)
+				log.Printf("최종 버전의 스케줄된 메세지(%s) 발행 성공: %+v 메세지 발행 예약 시각: %s (예정까지 %d초)", scheduleId, pubAck, scheduledAt.Format(time.RFC3339), int(scheduledAt.Sub(currentTime).Seconds()))
 			}
 		}
 	}
