@@ -17,8 +17,8 @@ import (
 var NumScheduledChatMessages = 1000
 var ModifyCountPerMessage = 10
 var InitDelayTime int
-var scheduleTimeIntervalMin = 2
-var scheduledMsgGroupingCount = 5
+var ScheduleTimeIntervalMin = 1
+var ScheduledMsgGroupingCount = 100
 
 var latencyChan = make(chan time.Duration, 100)
 
@@ -91,7 +91,7 @@ func setLoadTestArguments() {
 	log.Println("args: ", args)
 	//         0      1    2
 	// go run main.go 1000 10
-	if len(args) >= 3 {
+	if len(args) >= 5 {
 		numScheduledChatMessagesInt, err := strconv.Atoi(args[1])
 		if err != nil {
 			log.Fatalf("첫번째 인자(예약메세지수) 변환 실패: %v", err)
@@ -105,6 +105,18 @@ func setLoadTestArguments() {
 		ModifyCountPerMessage = modifyCountPerMessageInt
 
 		InitDelayTime = ModifyCountPerMessage
+
+		scheduleTimeIntervalMinInt, err := strconv.Atoi(args[3])
+		if err != nil {
+			log.Fatalf("세번째 인자(메세지그룹간 ScheduledAt 간격(분)) 변환 실패: %v", err)
+		}
+		ScheduleTimeIntervalMin = scheduleTimeIntervalMinInt
+
+		scheduledMsgGroupingCountInt, err := strconv.Atoi(args[4])
+		if err != nil {
+			log.Fatalf("네번째 인자(메세지그룹핑수) 변환 실패: %v", err)
+		}
+		ScheduledMsgGroupingCount = scheduledMsgGroupingCountInt
 	}
 
 }
@@ -271,9 +283,9 @@ func getFastestScheduledAtbyIdx(idx int) time.Time {
 
 	//scheduledMsgGroupingCount(개) 마다, scheduleTimeIntervalMin(분) 씩 증가
 
-	d := idx / scheduledMsgGroupingCount
+	d := idx / ScheduledMsgGroupingCount
 
-	add := scheduleTimeIntervalMin * (d + 1)
+	add := ScheduleTimeIntervalMin * (d + 1)
 
 	return fatestNextMinuteTime.Add(time.Duration(add) * time.Minute)
 }
