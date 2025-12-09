@@ -44,7 +44,10 @@ func main() {
 
 	publishScheduledChatMessageToSchedulerStream()
 
-	//TODO 베어메탈에 nats 서버 셋업 및 연결
+	err := JS.DeleteStream(context.Background(), StreamName)
+	if err != nil {
+		log.Printf("기존 스트림 삭제 실패: %v", err)
+	}
 
 	select {}
 }
@@ -92,7 +95,12 @@ func ConnectNats() {
 }
 
 func createSchedulerStream() {
-	_, err := JS.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
+	err := JS.DeleteStream(context.Background(), StreamName)
+	if err != nil {
+		log.Printf("기존 스트림 삭제 실패: %v", err)
+	}
+
+	if _, err := JS.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
 		Name:              StreamName,
 		Storage:           jetstream.FileStorage,
 		Subjects:          []string{fmt.Sprintf("%s.*", coreSubjectPrefix), onProcessSubject},
@@ -106,8 +114,7 @@ func createSchedulerStream() {
 			Destination: republishSubjectForQueueSubscription,
 		},
 		Replicas: 3,
-	})
-	if err != nil {
+	}); err != nil {
 		log.Fatalf("스트림 생성 실패: %v", err)
 	}
 
