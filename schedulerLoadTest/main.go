@@ -17,6 +17,8 @@ import (
 var NumScheduledChatMessages = 1000
 var ModifyCountPerMessage = 10
 var InitDelayTime int
+var scheduleTimeIntervalMin = 2
+var scheduledMsgGroupingCount = 5
 
 var latencyChan = make(chan time.Duration, 100)
 
@@ -102,7 +104,7 @@ func setLoadTestArguments() {
 		}
 		ModifyCountPerMessage = modifyCountPerMessageInt
 
-		InitDelayTime = ModifyCountPerMessage + 1
+		InitDelayTime = ModifyCountPerMessage
 	}
 
 }
@@ -209,19 +211,17 @@ type MessageContent struct {
 	ScheduleId  string
 }
 
+// 100개 5분간격 테스트
 func publishScheduledChatMessageToSchedulerStream() {
 	for idx := range NumScheduledChatMessages {
 
 		var scheduleId = fmt.Sprintf("ULID_%d", idx+1)
 
-		currentTime := time.Now().In(KST)
-		currentSec := currentTime.Second()
-		currentTimeWithoutSec := currentTime.Add(time.Duration(-currentSec) * time.Second)
-		nextMinuteTime := currentTimeWithoutSec.Add(1 * time.Minute)
+		fastestScheduledAt := getFastestScheduledAtbyIdx(idx)
 
 		for mc := 1; mc <= ModifyCountPerMessage; mc++ {
 
-			scheduledAt := nextMinuteTime.Add(time.Duration(InitDelayTime-mc) * time.Minute)
+			scheduledAt := fastestScheduledAt.Add(time.Duration(InitDelayTime-mc) * time.Minute)
 
 			if idx == 0 && mc == ModifyCountPerMessage {
 				FirstScheduledAt = scheduledAt
@@ -230,7 +230,7 @@ func publishScheduledChatMessageToSchedulerStream() {
 				LastScheduledAt = scheduledAt
 			}
 
-			remainingTime := int(scheduledAt.Sub(nextMinuteTime).Seconds())
+			remainingTime := int(scheduledAt.Sub(time.Now().In(KST)).Seconds())
 
 			msg := MessageContent{
 				ScheduleId:  scheduleId,
@@ -239,7 +239,8 @@ func publishScheduledChatMessageToSchedulerStream() {
 
 			msgBytes, err := json.Marshal(msg)
 			if err != nil {
-				log.Fatalf("메세지 직렬화 실패: %v", err)
+				log.Printf("메세지 직렬화 실패: %v", err)
+				continue
 			}
 
 			pubAck, err := JS.PublishMsg(context.Background(), &nats.Msg{
@@ -262,6 +263,26 @@ func publishScheduledChatMessageToSchedulerStream() {
 	}
 
 	PrintStreamInfo()
+}
+
+func getFastestScheduledAtbyIdx(idx int) time.Time {
+
+	fatestNextMinuteTime := getFatestNextMinuteTime()
+
+	//scheduledMsgGroupingCount(개) 마다, scheduleTimeIntervalMin(분) 씩 증가
+
+	d := idx / scheduledMsgGroupingCount
+
+	add := scheduleTimeIntervalMin * (d + 1)
+
+	return fatestNextMinuteTime.Add(time.Duration(add) * time.Minute)
+}
+
+func getFatestNextMinuteTime() time.Time {
+	currentTime := time.Now().In(KST)
+	currentSec := currentTime.Second()
+	currentTimeWithoutSec := currentTime.Add(time.Duration(-currentSec) * time.Second)
+	return currentTimeWithoutSec.Add(1 * time.Minute)
 }
 
 func PrintStreamInfo() {
