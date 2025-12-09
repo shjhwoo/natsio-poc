@@ -72,9 +72,12 @@ func main() {
 	log.Println("--- 모든 메시지 수신 및 집계 완료. 채널 닫기 ---")
 	close(latencyChan)
 
+	log.Println("모든 예약메세지 발행 및 수신 테스트 완료, FirstScheduledAt:", FirstScheduledAt, "LastScheduledAt:", LastScheduledAt)
 	schDuration := LastScheduledAt.Sub(FirstScheduledAt)
 
-	log.Printf("분당 %d건의 예약메세지 발행 및 수신 테스트 완료:", NumScheduledChatMessages/int(schDuration.Minutes()))
+	if schDuration.Minutes() > 0 {
+		log.Printf("분당 %d건의 예약메세지 발행 및 수신 테스트 완료:", NumScheduledChatMessages/int(schDuration.Minutes()))
+	}
 
 	avgLatency := totalLatency / time.Duration(messageCount)
 	log.Println("📢 Latency Aggregator - avgLatency: ", avgLatency, "maxLatency", maxLatency, "count: ", messageCount)
@@ -212,10 +215,13 @@ func publishScheduledChatMessageToSchedulerStream() {
 		var scheduleId = fmt.Sprintf("ULID_%d", idx+1)
 
 		currentTime := time.Now().In(KST)
+		currentSec := currentTime.Second()
+		currentTimeWithoutSec := currentTime.Add(time.Duration(-currentSec) * time.Second)
+		nextMinuteTime := currentTimeWithoutSec.Add(1 * time.Minute)
 
 		for mc := 1; mc <= ModifyCountPerMessage; mc++ {
 
-			scheduledAt := currentTime.Add(time.Duration(InitDelayTime-mc) * time.Minute)
+			scheduledAt := nextMinuteTime.Add(time.Duration(InitDelayTime-mc) * time.Minute)
 
 			if idx == 0 && mc == ModifyCountPerMessage {
 				FirstScheduledAt = scheduledAt
@@ -224,7 +230,7 @@ func publishScheduledChatMessageToSchedulerStream() {
 				LastScheduledAt = scheduledAt
 			}
 
-			remainingTime := int(scheduledAt.Sub(currentTime).Seconds())
+			remainingTime := int(scheduledAt.Sub(nextMinuteTime).Seconds())
 
 			msg := MessageContent{
 				ScheduleId:  scheduleId,
