@@ -15,7 +15,7 @@ const natsURL = "nats://localhost:4222,nats://localhost:4223,nats://localhost:42
 const StreamName = "scheduledEventSink"
 const coreSubjectPrefix = "schedules.pending"
 const onProcessSubject = "schedules.onProcess"
-const republishSubjectForQueueSubscription = "starfruit.internal.pub.event"
+const republishSubjectForQueueSubscription = "internalEvent"
 
 var NC *nats.Conn
 var JS jetstream.JetStream
@@ -110,6 +110,9 @@ func queueSubscribeScheduledMessageEvent() {
 	for idx := range 2 {
 		sub, err := NC.QueueSubscribe(republishSubjectForQueueSubscription, "SCHEDULEQUEUE", func(msg *nats.Msg) {
 			log.Printf("%d 번 sub에서, repub 메세지 수신 완료: %s %v %s", idx, msg.Subject, msg.Header, string(msg.Data))
+
+			PrintStreamInfo()
+
 		})
 		if err != nil {
 			log.Fatalf("컨슈머 생성 실패: %v", err)
@@ -151,9 +154,12 @@ func publishScheduledChatMessageToSchedulerStream(currentTime time.Time) {
 		}
 	}
 
-	//스트림 정책에 따라서 메세지는 최종 3개로만 남아있어야 한다
+	PrintStreamInfo()
+}
+
+func PrintStreamInfo() {
 	streamInfo, err := JS.Stream(context.Background(), StreamName)
 	if err == nil {
-		log.Printf("📢 발행 후 Stream 상태: Messages: %d, Bytes: %d", streamInfo.CachedInfo().State.Msgs, streamInfo.CachedInfo().State.Bytes)
+		log.Printf("📢 Stream 상태: Messages: %d, Bytes: %d", streamInfo.CachedInfo().State.Msgs, streamInfo.CachedInfo().State.Bytes)
 	}
 }
