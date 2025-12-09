@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -15,6 +16,8 @@ import (
 var NumScheduledChatMessages = 1000
 var ModifyCountPerMessage = 10
 var InitDelayTime int
+
+var latencyChan = make(chan time.Duration)
 
 const natsURL = "nats://localhost:4222,nats://localhost:4223,nats://localhost:4224"
 const StreamName = "scheduledEventSink"
@@ -34,6 +37,8 @@ func main() {
 	defer NC.Close()
 
 	createSchedulerStream()
+
+	go latencyAggregator()
 
 	queueSubscribeScheduledMessageEvent()
 
@@ -63,7 +68,7 @@ func setLoadTestArguments() {
 		}
 		ModifyCountPerMessage = modifyCountPerMessageInt
 
-		InitDelayTime = ModifyCountPerMessage * ModifyCountPerMessage
+		InitDelayTime = ModifyCountPerMessage * (ModifyCountPerMessage + 1) //초
 	}
 
 }
@@ -114,17 +119,71 @@ func createSchedulerStream() {
 
 // 스케줄러 stream에서 예약된 시각에 발행되는 메세지를 큐 그룹에게 전달하려면,
 // 스케줄러 스트림에 repub 설정을 하고, 신규 subject(repub) 에다가 큐 구독자를 생성해야 합니다.
-func queueSubscribeScheduledMessageEvent() {
-	for idx := range 2 {
-		sub, err := NC.QueueSubscribe(republishSubjectForQueueSubscription, "SCHEDULEQUEUE", func(msg *nats.Msg) {
-			log.Printf("%d 번 sub에서, repub 메세지 수신 완료: %s %v %s", idx, msg.Subject, msg.Header, string(msg.Data))
-			//TODO Latency 측정 로직 추가
-		})
-		if err != nil {
-			log.Fatalf("컨슈머 생성 실패: %v", err)
+func latencyAggregator() {
+	var totalLatency time.Duration
+	var maxLatency time.Duration
+	var messageCount int64
+
+	// 채널이 닫힐 때까지 반복하며 값을 수신합니다.
+	for latency := range latencyChan {
+
+		if latency > maxLatency {
+			maxLatency = latency
+			log.Printf("🚨 새로운 최대 Latency 기록: %s", maxLatency)
 		}
-		log.Println("repub 이벤트수신을 위한 sub 생성완: ", sub)
+
+		totalLatency += latency
+		messageCount++
+
+		// 주기적으로 평균 Latency 출력 (단일 고루틴이므로 Lock 불필요)
+		if messageCount%100 == 0 {
+			avgLatency := totalLatency / time.Duration(messageCount)
+			log.Printf("📢 Latency Aggregator: 메시지 총 %d개, 현재 평균 Latency: %s, 최대 Latency: %s", messageCount, avgLatency, maxLatency)
+		}
 	}
+}
+
+func queueSubscribeScheduledMessageEvent() {
+
+	sub, err := NC.QueueSubscribe(republishSubjectForQueueSubscription, "SCHEDULEQUEUE", func(msg *nats.Msg) {
+		log.Printf("repub 메세지 수신 완료: %s %v %s", msg.Subject, msg.Header, string(msg.Data))
+		//TODO Latency 측정 로직 추가
+
+		var content MessageContent
+		err := json.Unmarshal(msg.Data, &content)
+		if err != nil {
+			log.Fatalf("메세지 역직렬화 실패: %v", err)
+		}
+
+		// 1. 헤더에서 Nats-Time-Stamp 값 추출
+		timestampStr := msg.Header.Get("Nats-Time-Stamp")
+
+		// 2. RFC3339Nano 형식으로 파싱 (NATS의 기본 포맷)
+		natsTime, err := time.Parse(time.RFC3339Nano, timestampStr)
+		if err != nil {
+			log.Fatalf("Nats-Time-Stamp 파싱 실패: %v, 값: %s", err, timestampStr)
+		}
+
+		// 3. NATS-Time-Stamp를 기준으로 Latency 재계산
+		latency := natsTime.Sub(content.ScheduledAt.In(time.UTC))
+
+		log.Printf("지연 시간 계산 완료: NATS Time: %v, Latency: %v", natsTime, latency)
+
+		// 2. Latency 값을 채널로 전송 (Aggregator 고루틴이 처리)
+		// 🚨 주의: Aggregator 고루틴이 시작되어 수신할 준비가 되어 있어야 합니다.
+		latencyChan <- latency
+
+	})
+	if err != nil {
+		log.Fatalf("컨슈머 생성 실패: %v", err)
+	}
+	log.Println("repub 이벤트수신을 위한 sub 생성완: ", sub)
+
+}
+
+type MessageContent struct {
+	ScheduledAt time.Time
+	ScheduleId  string
 }
 
 func publishScheduledChatMessageToSchedulerStream() {
@@ -132,13 +191,22 @@ func publishScheduledChatMessageToSchedulerStream() {
 
 		var scheduleId = fmt.Sprintf("ULID_%d", idx+1)
 
-		for i := 1; i <= ModifyCountPerMessage; i++ {
+		for mc := 1; mc <= ModifyCountPerMessage; mc++ {
 
 			currentTime := time.Now()
 
-			//하나의 메세지 발행해놓고 5초씩 scheduledAt을 앞당겨보자. 항상 최종버전의 메세지만 남아있어야 한다.
-			scheduledAt := currentTime.Add(time.Duration(InitDelayTime-ModifyCountPerMessage*i) * time.Second)
+			scheduledAt := currentTime.Add(time.Duration(InitDelayTime-ModifyCountPerMessage*mc) * time.Second)
 			remainingTime := int(scheduledAt.Sub(currentTime).Seconds())
+
+			msg := MessageContent{
+				ScheduleId:  scheduleId,
+				ScheduledAt: scheduledAt,
+			}
+
+			msgBytes, err := json.Marshal(msg)
+			if err != nil {
+				log.Fatalf("메세지 직렬화 실패: %v", err)
+			}
 
 			pubAck, err := JS.PublishMsg(context.Background(), &nats.Msg{
 				Header: nats.Header{
@@ -147,14 +215,20 @@ func publishScheduledChatMessageToSchedulerStream() {
 					"Nats-Schedule-Target": []string{onProcessSubject},                  // Target 주제 설정
 				},
 				Subject: fmt.Sprintf("%s.%s", coreSubjectPrefix, scheduleId),
-				Data:    []byte(fmt.Sprintf("This is a scheduled task message with Id %s", scheduleId)),
+				Data:    msgBytes,
 			})
 			if err != nil {
-				log.Fatalf("스케줄된 메세지 발행 실패: %v", err)
+				log.Fatalf("스케줄된 메세지 발행 실패: %v, remainingTime: %d", err, remainingTime)
 			}
 
-			if i == ModifyCountPerMessage {
+			if mc == ModifyCountPerMessage {
 				log.Printf("최종 버전의 스케줄된 메세지(%s) 발행 성공: %+v 메세지 발행 예약 시각: %s (예정까지 %d초)", scheduleId, pubAck, scheduledAt.Format(time.RFC3339), remainingTime)
+
+				if idx == NumScheduledChatMessages {
+					time.Sleep(time.Duration(remainingTime))
+					close(latencyChan)
+					log.Println("Latency 채널이 닫혔습니다. 집계가 완료되었습니다.")
+				}
 			}
 		}
 	}
