@@ -5,7 +5,8 @@
 - nats server 2.12.2 이상 버전부터 지원합니다 
 - AllowMsgSchedules, AllowMsgTTL는 필수속성입니다
 - 스케줄러 목적으로 생성한 Jetstream의 AllowMsgSchedules, AllowMsgTTL는 다시 false로 되돌릴 수 없다 
-- 일반 stream과 마찬가지로 consumer를 여럿 생성하고, 그 consumer들이 fanout 방식으로 예약시각에 메세지를 받아볼 수 있습니다. 단, 이때 consumer는 반드시 CreatePushConsumer 함수를 사용하여 생성해야합니다. (getScheduledMessageFromConsumer함수 참고)
+- 일반 stream과 마찬가지로 consumer를 여럿 생성하고, 그 consumer들이 fanout 방식으로 예약시각에 메세지를 받아볼 수 있습니다. 
+단, 이때 consumer는 반드시 CreatePushConsumer 함수를 사용하여 생성해야합니다. (getScheduledMessageFromConsumer함수 참고)
 - 일반 stream과 마찬가지로 RePublish 속성과 함께 사용 가능합니다. 
 
 * 헤더 설명
@@ -20,7 +21,9 @@
 해당 값을 제대로 지정하지 않게 되면, Nats-Schedule 값이 과거 시각인 경우 원하지 않게 메세지가 발행이 즉시 되어버릴 수 있으니 주의해야 합니다.
 
 - Nats-Schedule-Target : 예약 시각에 발행된 메세지는 Scheduler stream에 다시 저장이 됩니다. 
-Scheduler stream에 지정한 Subject 중에 하나의 Subject를 이 헤더의 값으로 지정하게 되면, 예약 시각에 해당 Subject로 메세지가 발행되며 Scheduler stream에 저장됩니다. 해당 헤더 값은 위 두 헤더의 값과 함께 반드시 같이 지정해야 합니다
+Scheduler stream에 지정한 Subject 중에 하나의 Subject를 이 헤더의 값으로 지정하게 되면, 
+예약 시각에 해당 Subject로 메세지가 발행되며 Scheduler stream에 저장됩니다. 
+해당 헤더 값은 위 두 헤더의 값과 함께 반드시 같이 지정해야 합니다
 
 - 이외에 내가 원하는 헤더들을 추가로 커스텀해서 지정할 수 있으며 해당 헤더들은 지정된 예약 시각에 발행되는 메세지에 함께 포함이 됩니다. 
 
