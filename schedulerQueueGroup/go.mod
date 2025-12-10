@@ -1,4 +1,4 @@
-module schedulerStreamCRUD
+module schedulerQueueGroup
 
 go 1.24.0
 
