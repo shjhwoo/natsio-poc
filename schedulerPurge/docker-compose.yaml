@@ -1,0 +1,36 @@
+version: "3.5"
+
+services:
+  nats-hub-server-1:
+    image: nats:2.12.2
+    ports:
+      - "4222:4222"
+      - "6222:6222"
+    volumes:
+      - ./s1.conf:/etc/nats/nats.conf
+    command: "-c /etc/nats/nats.conf"
+    networks: ["starfruit"]
+
+  nats-hub-server-2:
+    image: nats:2.12.2
+    ports:
+      - "4223:4222"
+      - "6223:6222"
+    volumes:
+      - ./s2.conf:/etc/nats/nats.conf
+    command: "-c /etc/nats/nats.conf"
+    networks: ["starfruit"]
+
+  nats-hub-server-3:
+    image: nats:2.12.2
+    ports:
+      - "4224:4222"
+      - "6224:6222"
+    volumes:
+      - ./s3.conf:/etc/nats/nats.conf
+    command: "-c /etc/nats/nats.conf"
+    networks: ["starfruit"]
+
+networks:
+  starfruit:
+    name: starfruit
