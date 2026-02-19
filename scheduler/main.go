@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -37,29 +38,37 @@ func main() {
 
 	//queueSubscribeScheduledMessageEvent()
 
-	createPubAck, err := createScheduledChatMessageToSchedulerStream()
-	if err != nil {
-		log.Fatalf("스케줄된 메세지 발행 실패: %v", err)
-	}
-	log.Printf("스케줄된 메세지 발행 성공: %+v", createPubAck)
-	PrintStreamInfo() //즉시확인
+	// createPubAck, err := createScheduledChatMessageToSchedulerStream()
+	// if err != nil {
+	// 	log.Fatalf("스케줄된 메세지 발행 실패: %v", err)
+	// }
+	// log.Printf("스케줄된 메세지 발행 성공: %+v", createPubAck)
+	// PrintStreamInfo() //즉시확인
 
-	time.Sleep(time.Second * 6)
-	PrintStreamInfo() //스케줄된 메세지 발행 후 6초뒤에 확인
+	// time.Sleep(time.Second * 6)
+	// PrintStreamInfo() //스케줄된 메세지 발행 후 6초뒤에 확인
 
-	discardPubAck, err := discardScheduledChatMessage()
-	if err != nil {
-		log.Fatalf("스케줄된 메세지 삭제요청 실패: %v", err)
-	}
-	log.Printf("스케줄된 메세지 삭제요청 성공: %+v, 남은시간: 5초 뒤에 삭제됨", discardPubAck)
-	time.Sleep(time.Second * 6)
-	PrintStreamInfo()
+	// discardPubAck, err := discardScheduledChatMessage()
+	// if err != nil {
+	// 	log.Fatalf("스케줄된 메세지 삭제요청 실패: %v", err)
+	// }
+	// log.Printf("스케줄된 메세지 삭제요청 성공: %+v, 남은시간: 5초 뒤에 삭제됨", discardPubAck)
+	// time.Sleep(time.Second * 6)
+	// PrintStreamInfo()
 
 	immediatePubAck, err := immediateSendScheduledChatMessageAtSchedulerStream()
 	if err != nil {
 		log.Fatalf("스케줄된 메세지 즉시발송 실패: %v", err)
 	}
 	log.Printf("스케줄된 메세지 즉시발송 성공: %+v", immediatePubAck)
+	PrintStreamInfo()
+
+	immediatePubAck, err = immediateSendScheduledChatMessageAtSchedulerStream()
+	if err != nil {
+		log.Fatalf("스케줄된 메세지 즉시발송 실패: %v", err)
+	}
+	log.Printf("스케줄된 메세지 즉시발송 성공: %+v", immediatePubAck)
+
 	PrintStreamInfo()
 
 	select {}
@@ -85,19 +94,19 @@ func ConnectNats() {
 
 func createSchedulerStream() {
 	_, err := JS.CreateOrUpdateStream(context.Background(), jetstream.StreamConfig{
-		Name:              StreamName,
-		Storage:           jetstream.FileStorage,
-		Subjects:          []string{fmt.Sprintf("%s.*", coreSubjectPrefix), onProcessSubject, discardedSubject},
+		Name:    StreamName,
+		Storage: jetstream.FileStorage,
+		Subjects: []string{
+			fmt.Sprintf("%s.*", coreSubjectPrefix),
+			fmt.Sprintf("%s.*", onProcessSubject),
+			discardedSubject,
+		},
 		Retention:         jetstream.WorkQueuePolicy,
 		Discard:           jetstream.DiscardOld, //- 수정 및 삭제 시 필수 옵션
 		MaxMsgsPerSubject: 1,                    //- 수정 및 삭제 시 필수 옵션
 		AllowMsgSchedules: true,                 // 스케줄된 메세지 허용
 		AllowMsgTTL:       true,                 // 스케줄된 메세지 TTL 허용
-		RePublish: &jetstream.RePublish{
-			Source:      onProcessSubject,
-			Destination: republishSubjectForQueueSubscription,
-		},
-		Replicas: 3,
+		Replicas:          3,
 	})
 	if err != nil {
 		log.Fatalf("스트림 생성 실패: %v", err)
@@ -114,7 +123,7 @@ func getScheduledMessageFromConsumer() {
 	consumer, err := JS.CreateConsumer(context.Background(), StreamName, jetstream.ConsumerConfig{
 		Durable:        "SCH",
 		AckPolicy:      jetstream.AckExplicitPolicy,
-		FilterSubjects: []string{onProcessSubject},
+		FilterSubjects: []string{fmt.Sprintf("%s.*", onProcessSubject)},
 	})
 	if err != nil {
 		log.Fatalf("컨슈머 생성 실패: %v", err)
@@ -178,7 +187,7 @@ func createScheduledChatMessageToSchedulerStream() (*jetstream.PubAck, error) {
 }
 
 func immediateSendScheduledChatMessageAtSchedulerStream() (*jetstream.PubAck, error) {
-	var scheduleId = "ULID_2"
+	var scheduleId = uuid.NewString()[:10]
 
 	currentTime := time.Now()
 
@@ -188,8 +197,8 @@ func immediateSendScheduledChatMessageAtSchedulerStream() (*jetstream.PubAck, er
 	pubAck, err := JS.PublishMsg(context.Background(), &nats.Msg{
 		Header: nats.Header{
 			"Nats-Schedule":        []string{fmt.Sprintf("@at %s", scheduledAt.Format(time.RFC3339))},
-			"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)}, // TTL 설정 (즉 실제 target에 도달 후 보관을 하고 있을 기간을 의미**)
-			"Nats-Schedule-Target": []string{onProcessSubject},                  // Target 주제 설정
+			"Nats-Schedule-TTL":    []string{fmt.Sprintf("%ds", remainingTime)},                  // TTL 설정 (즉 실제 target에 도달 후 보관을 하고 있을 기간을 의미**)
+			"Nats-Schedule-Target": []string{fmt.Sprintf("%s.%s", onProcessSubject, scheduleId)}, // Target 주제 설정
 		},
 		Subject: fmt.Sprintf("%s.%s", coreSubjectPrefix, scheduleId),
 		Data:    []byte(fmt.Sprintf("<즉시발송>This is a scheduled task message with Id %s", scheduleId)),
