@@ -26,14 +26,16 @@ func main() {
 
 	defer NC.Close()
 
-	//getScheduledMessageFromConsumer()
-
 	createSchedulerStream()
+
+	getScheduledMessageFromConsumer()
+
+	PrintStreamInfo() //스케줄된 메세지 발행 후 6초뒤에 확인
 
 	currentTime := time.Now()
 	log.Printf("현재 시각: %s", currentTime.Format(time.RFC3339))
 
-	queueSubscribeScheduledMessageEvent()
+	//queueSubscribeScheduledMessageEvent()
 
 	createPubAck, err := createScheduledChatMessageToSchedulerStream()
 	if err != nil {
@@ -86,11 +88,11 @@ func createSchedulerStream() {
 		Name:              StreamName,
 		Storage:           jetstream.FileStorage,
 		Subjects:          []string{fmt.Sprintf("%s.*", coreSubjectPrefix), onProcessSubject, discardedSubject},
-		Retention:         jetstream.LimitsPolicy, //- 수정 및 삭제 시 필수 옵션
-		Discard:           jetstream.DiscardOld,   //- 수정 및 삭제 시 필수 옵션
-		MaxMsgsPerSubject: 1,                      //- 수정 및 삭제 시 필수 옵션
-		AllowMsgSchedules: true,                   // 스케줄된 메세지 허용
-		AllowMsgTTL:       true,                   // 스케줄된 메세지 TTL 허용
+		Retention:         jetstream.WorkQueuePolicy,
+		Discard:           jetstream.DiscardOld, //- 수정 및 삭제 시 필수 옵션
+		MaxMsgsPerSubject: 1,                    //- 수정 및 삭제 시 필수 옵션
+		AllowMsgSchedules: true,                 // 스케줄된 메세지 허용
+		AllowMsgTTL:       true,                 // 스케줄된 메세지 TTL 허용
 		RePublish: &jetstream.RePublish{
 			Source:      onProcessSubject,
 			Destination: republishSubjectForQueueSubscription,
@@ -107,41 +109,49 @@ func createSchedulerStream() {
 	}
 }
 
-// func getScheduledMessageFromConsumer() {
-// 	consumer, err := JS.CreateOrUpdatePushConsumer(context.Background(), StreamName, jetstream.ConsumerConfig{
-// 		DeliverSubject: nats.NewInbox(),
-// 		FilterSubjects: []string{onProcessSubject},
-// 	})
-// 	if err != nil {
-// 		log.Fatalf("컨슈머 생성 실패: %v", err)
-// 	}
+func getScheduledMessageFromConsumer() {
 
-// 	conCtx, err := consumer.Consume(func(msg jetstream.Msg) {
-// 		log.Println("메세지 수신 완료: ", msg.Subject(), msg.Headers(), string(msg.Data()))
-// 	})
-// 	if err != nil {
-// 		log.Fatalf("메세지 수신 실패: %v", err)
-// 	}
-
-// 	log.Println("컨슈머 생성 및 구독 준비 완: ", conCtx)
-// }
-
-// 스케줄러 stream에서 예약된 시각에 발행되는 메세지를 큐 그룹에게 전달하려면,
-// 스케줄러 스트림에 repub 설정을 하고, 신규 subject(repub) 에다가 큐 구독자를 생성해야 합니다.
-func queueSubscribeScheduledMessageEvent() {
-	sub, err := NC.QueueSubscribe(republishSubjectForQueueSubscription, "SCHEDULEQUEUE", func(msg *nats.Msg) {
-		log.Printf(" repub 메세지 수신 완료: %s %v %s", msg.Subject, msg.Header, string(msg.Data))
-
-		log.Println("6초뒤에 스트림 확인")
-		time.Sleep(6 * time.Second)
-		PrintStreamInfo()
-
+	consumer, err := JS.CreateConsumer(context.Background(), StreamName, jetstream.ConsumerConfig{
+		Durable:        "SCH",
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		FilterSubjects: []string{onProcessSubject},
 	})
 	if err != nil {
 		log.Fatalf("컨슈머 생성 실패: %v", err)
 	}
-	log.Println("repub 이벤트수신을 위한 sub 생성완: ", sub)
+
+	for i := 0; i < 3; i++ {
+		conCtx, err := consumer.Consume(func(msg jetstream.Msg) {
+			log.Println("메세지 수신 완료: ", msg.Subject(), msg.Headers(), string(msg.Data()), consumer.CachedInfo().Name)
+
+			msg.Ack()
+
+		})
+		if err != nil {
+			log.Fatalf("메세지 수신 실패: %v", err)
+		}
+
+		log.Println("컨슈머 생성 및 구독 준비 완: ", conCtx, "consumerName: ", consumer.CachedInfo().Name)
+	}
+
 }
+
+// 스케줄러 stream에서 예약된 시각에 발행되는 메세지를 큐 그룹에게 전달하려면,
+// 스케줄러 스트림에 repub 설정을 하고, 신규 subject(repub) 에다가 큐 구독자를 생성해야 합니다.
+// func queueSubscribeScheduledMessageEvent() {
+// 	sub, err := NC.QueueSubscribe(republishSubjectForQueueSubscription, "SCHEDULEQUEUE", func(msg *nats.Msg) {
+// 		log.Printf(" repub 메세지 수신 완료: %s %v %s", msg.Subject, msg.Header, string(msg.Data))
+
+// 		log.Println("6초뒤에 스트림 확인")
+// 		time.Sleep(6 * time.Second)
+// 		PrintStreamInfo()
+
+// 	})
+// 	if err != nil {
+// 		log.Fatalf("컨슈머 생성 실패: %v", err)
+// 	}
+// 	log.Println("repub 이벤트수신을 위한 sub 생성완: ", sub)
+// }
 
 func createScheduledChatMessageToSchedulerStream() (*jetstream.PubAck, error) {
 	var scheduleId = "ULID_1"
@@ -215,8 +225,9 @@ func discardScheduledChatMessage() (*jetstream.PubAck, error) {
 }
 
 func PrintStreamInfo() {
+
 	streamInfo, err := JS.Stream(context.Background(), StreamName)
 	if err == nil {
-		log.Printf("📢 Stream 상태: Messages: %d, Bytes: %d", streamInfo.CachedInfo().State.Msgs, streamInfo.CachedInfo().State.Bytes)
+		log.Printf("📢 Stream 상태: Messages: %d, Bytes: %d, consumers: %d", streamInfo.CachedInfo().State.Msgs, streamInfo.CachedInfo().State.Bytes, streamInfo.CachedInfo().State.Consumers)
 	}
 }
