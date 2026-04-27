@@ -1,0 +1,738 @@
+╭─── Claude Code v2.1.114 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                 Welcome back 수현!                 │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ Recent activity         │
+│                        ▘▘ ▝▝                       │ No recent activity      │
+│  Sonnet 4.6 · Claude Pro · abcc0785@gmail.com's    │                         │
+│  Organization                                      │                         │
+│ ~\Desktop\starfruit-nats-lab\jetstreamFanoutInter… │                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+❯ /model                                                                        
+  ⎿  Set model to Opus 4.7
+
+❯ 내가 생각한 개념을 실제로 구현하고 사용할 수 있는지 poc 테스트를 해보고 싶다. 
+   나랑 대화하면서 어떻게 poc 만들건지 plan을 만들어보자                        
+
+● 먼저 현재 프로젝트 구조를 파악해볼게요.
+
+  Listed 1 directory (ctrl+o to expand)
+
+❯ 새로운 poc를 만들거라 폴더 명부터 정해야 한다                                 
+
+● 좋습니다. 먼저 어떤 개념을 PoC로 만들고 싶은지 알려주세요. 아래 정보를
+  알려주시면 폴더명 제안과 함께 plan을 짜볼게요:
+
+  1. 어떤 개념/아이디어인가요? (NATS의 어떤 기능을 검증하려는지)
+  2. 무엇을 검증하고 싶나요? (성능? 동작 방식? 특정 시나리오?)
+  3. 현재 repo의 다른 폴더(workQueueConsumer 등)와 어떻게 다른가요?
+
+❯ 1. 현재 queueGroupWithFanout 개념은 지금 core nats pub.sub으로 구현되어       
+  있는데, 이는 서비스 다운타임 때 메세지 유실의 한계가 있어서 jetstream을       
+  사용해서 메세지 유실 방지까지 하면서 QueueGroupWithFanout을 구현할 수 있는지  
+  알고 싶어. 2,3은 1에서 다 설명한거같아                                        
+
+● 기존 구현을 먼저 확인해볼게요.
+
+  Read 1 file, listed 2 directories (ctrl+o to expand)
+
+● 기존 구조 파악 완료. 핵심 패턴은:
+  - 1개 subject (starfruit.internal.event)
+  - 3개 service (각각 1개 queue group)
+  - 각 service당 3개 instance
+  - Fanout: 모든 service가 이벤트 수신
+  - Queue group: service 내 1개 instance만 처리
+
+  JetStream으로 같은 패턴을 만들면서 메시지 유실 방지를 검증하는 PoC를 짜는 게
+  목표죠. 본격 plan 들어가기 전에 핵심 설계 포인트를 advisor에게 한 번 검토받고
+  싶어요.
+
+● Advising using Opus 4.7
+  ⎿  ✔ Advisor has reviewed the conversation and will apply the feedback
+
+● advisor 의견 정리해서 의사결정 포인트로 정리해볼게요.
+
+  폴더명 제안
+
+  jetstreamQueueGroupWithFanout — 기존 queueGroupWithFanout과 짝을 이뤄 비교
+  PoC라는 의도가 명확합니다.
+
+  핵심 매핑 (Core NATS → JetStream)
+
+  ┌────────────────────────────┬────────────────────────────────────────────┐
+  │            기존            │                 JetStream                  │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Subject (휘발)             │ Stream (File storage로 영속)               │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Service = Queue group 이름 │ Service = Durable Consumer 1개             │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Instance = 같은 queue      │ Instance = 같은 durable name을 bind한 여러 │
+  │ group 멤버                 │  클라이언트                                │
+  ├────────────────────────────┼────────────────────────────────────────────┤
+  │ Fanout = 다른 queue group  │ Fanout = 다른 durable consumer (각자 ack   │
+  │                            │ state)                                     │
+  └────────────────────────────┴────────────────────────────────────────────┘
+
+  ▎ 핵심: JetStream에서는 "queue group" 문자열이 따로 없습니다. 같은 durable 
+  ▎ consumer를 여러 클라이언트가 share하는 게 queue group 역할을 합니다.
+
+  결정해야 할 분기점
+
+  1. Consumer 방식: Pull (모던/권장) vs Push (legacy의 DeliverGroup) → Pull 추천
+  2. Storage: File (영속) vs Memory → File 필수 (유실 방지가 목적이니)
+  3. AckPolicy: AckExplicit + 적절한 AckWait/MaxDeliver
+
+  PoC가 검증해야 할 시나리오 3가지
+
+  1. Baseline: fanout O + service 내 1 instance만 처리 O (기존과 동일)
+  2. Downtime test ← PoC 핵심: serviceB 전체 종료 → publish → serviceB 재시작 →
+  누락 없이 전부 수신
+  3. Mid-processing crash: ack 전 인스턴스 죽음 → 다른 인스턴스가 재수신
+  (AckWait 동작)
+
+  사용자가 결정해줘야 할 것
+
+  데모 방식을 어떻게 할까요?
+
+  - A안: 단일 main.go에 시퀀스 하드코딩 (goroutine cancel 등으로 "다운"
+  시뮬레이션) — 실행 간단, 설득력 보통
+  - B안: publisher / consumer 바이너리 분리 → 실제로 프로세스를 죽였다 살림 —
+  코드 늘어나지만 설득력 ↑
+  - C안: 일단 A안으로 baseline + downtime만 검증, 나중에 필요하면 B안 추가
+
+  어느 쪽으로 갈지, 그리고 위 매핑/시나리오에 추가/변경할 게 있는지 알려주세요.
+  정해지면 구체적인 step-by-step plan으로 정리할게요.
+
+✻ Sautéed for 1m 39s
+
+❯ 내가 확인해보고 싶은 건 서비스 A, B, C가 각자 consumer를 가지는데, 모두       
+  똑같이 jetstream으로부터 메세지를 받아서 각 서비스에 해당하는 처리를 하게     
+  하고, (예를 들어 회원가입 이벤트 발생시 : DB데이터 저장, 환영 이메일 발송,    
+  관리자에게 승인 요청을 각자 서비스에서 처리), 동시에 각 서비스에서 중복       
+  처리를 막기 위해 단 하나의 인스턴스가 처리를 하고 ack 하는 걸 구현하고 싶어.  
+  그리고, 각 서비스에서 모두 ack를 하면 그제서야 jetstream에서도 삭제가 되게끔  
+  하는 poc를 만들고 싶어.                                                       
+
+● 요구사항이 더 명확해졌네요. 핵심 한 가지가 추가됐어요:
+
+  ▎ 모든 서비스가 ack 완료하면 → JetStream에서 메시지 삭제
+
+  이걸 구현하는 결정적 키가 있습니다.
+
+  Read 1 file (ctrl+o to expand)
+
+● 중요한 발견: 기존 queueGroupWithFanout/main.go는 이미 JetStream +
+  InterestPolicy를 쓰고 있어요 (readme는 옛날 core NATS 설명만 남아있음).
+
+  핵심 메커니즘은 이미 한 줄로 들어가 있습니다:
+
+  // queueGroupWithFanout/main.go:51
+  Retention: jetstream.InterestPolicy,
+
+  InterestPolicy가 정확히 사용자가 원한 동작입니다
+
+  ┌───────────────────────┬─────────────────────────────────────────────────┐
+  │       Retention       │                      동작                       │
+  ├───────────────────────┼─────────────────────────────────────────────────┤
+  │ LimitsPolicy          │ age/size limit까지 보관                         │
+  │ (default)             │                                                 │
+  ├───────────────────────┼─────────────────────────────────────────────────┤
+  │ WorkQueuePolicy       │ 하나의 consumer가 ack하면 즉시 삭제 (fanout     │
+  │                       │ 불가)                                           │
+  ├───────────────────────┼─────────────────────────────────────────────────┤
+  │ InterestPolicy        │ interest 있는 모든 consumer가 ack해야 삭제 ←    │
+  │                       │ 이게 정답                                       │
+  └───────────────────────┴─────────────────────────────────────────────────┘
+
+  그리고 같은 Durable: queueName을 여러 인스턴스가 CreateOrUpdateConsumer로 공유
+   → 자동 work-share (queue group 효과). 이미 다 들어있어요.
+
+  그래서 PoC가 진짜 해야 할 일
+
+  기존 코드는 "발행 → 처리 → 종료" 흐름만 보여줘서 InterestPolicy의 진짜 
+  가치(영속성, 부분 ack 시 보존)를 증명하지 못합니다. 새 PoC는 그걸 명시적으로
+  검증해야 합니다.
+
+  검증 시나리오 제안
+
+  #: 1
+  시나리오: Baseline
+  검증 포인트: fanout O, 서비스 내 1 instance만 처리
+  측정 방법: 로그 확인 (기존과 동일)
+  ────────────────────────────────────────
+  #: 2
+  시나리오: 부분 ack 후 보존
+  검증 포인트: A,B만 살아있고 C는 다운 → 메시지 발행 → A,B는 ack했지만 stream에 
+    메시지 남아있음
+  측정 방법: StreamInfo.State.Msgs > 0, Consumer[C].NumPending = N
+  ────────────────────────────────────────
+  #: 3
+  시나리오: 전체 ack 후 삭제
+  검증 포인트: C 복구 → C가 처리/ack → stream 메시지 수 = 0
+  측정 방법: StreamInfo.State.Msgs == 0
+  ────────────────────────────────────────
+  #: 4
+  시나리오: 서버 재시작 후 영속성 (선택)
+  검증 포인트: 메시지 발행 후 nats 서버 재시작 → 메시지 살아있음
+  측정 방법: docker restart 후 stream state 확인
+
+  폴더명 제안 (재정비)
+
+  기존 폴더와 차별화하려면 검증/측정이 핵심임을 폴더명에 담는 게 좋을 것 같아요:
+
+  - jetstreamFanoutInterestPolicy ← InterestPolicy가 PoC의 핵심임을 명시
+  - jetstreamQueueGroupWithFanout ← 기존 페어로 깔끔하지만 차별점이 약함
+  - fanoutWithDurableConsumer ← 메커니즘 강조
+
+  저는 jetstreamFanoutInterestPolicy 추천. "어떤 retention policy가 fanout +
+  유실방지를 가능하게 하는지 검증"이라는 PoC 의도가 폴더명에서 바로 읽혀요.
+
+  사용자가 결정해줘야 할 것
+
+  1. 폴더명: 위 셋 중 어느 것? 아니면 다른 이름?
+  2. 시나리오 4 (서버 재시작) 포함할까요? docker compose restart 단계가 추가되어
+   수동 단계가 늡니다.
+  3. 다운 시뮬레이션 방법:
+    - (a) 같은 프로세스 내에서 consumer.Stop() 으로 시뮬레이션 — 간단
+    - (b) 서비스별 별도 바이너리로 분리해서 실제로 프로세스 kill — 설득력 ↑
+
+  이 셋만 정해주시면 step-by-step plan으로 정리하겠습니다.
+
+✻ Sautéed for 51s
+
+❯ 1. jetstreamFanoutInterestPolicy 2.  포함해 3. a                              
+
+● 확정 사항 반영해서 최종 plan 정리합니다.
+
+  PoC Plan: jetstreamFanoutInterestPolicy
+
+  폴더 구조
+
+  jetstreamFanoutInterestPolicy/
+  ├── docker-compose.yaml    # nats:latest with JetStream + 영속 볼륨
+  ├── nats.conf              # JetStream 활성화, store_dir 지정
+  ├── main.go                # PoC 본체 (4 phase 시퀀스)
+  ├── go.mod / go.sum
+  └── readme.md              # 검증 결과 + 핵심 메커니즘 설명
+
+  핵심 설계
+
+  - Stream: eventSink, subject starfruit.internal.event, Retention: 
+  InterestPolicy, Storage: FileStorage
+  - Consumer: 서비스별 1개 durable (QueueGroupA/B/C), AckExplicitPolicy,
+  AckWait: 30s
+  - Instance: 각 서비스당 3개, 같은 durable name으로 CreateOrUpdateConsumer 호출
+   → 자동 work-share
+  - 다운 시뮬레이션: consumeCtx.Stop() 으로 service 단위 정지/재시작
+
+  main.go 흐름 (4 phase)
+
+  각 phase 사이에 stream/consumer 상태를 printStreamState() 로 찍어서 메시지 
+  수가 어떻게 변하는지 시각화합니다. 이게 PoC의 핵심 증거.
+
+  ┌───────────┬────────────────────────────────┬───────────────────────────┐
+  │   Phase   │              동작              │           검증            │
+  ├───────────┼────────────────────────────────┼───────────────────────────┤
+  │ 1.        │ A/B/C 모두 가동 → 5 메시지     │ Stream.Msgs: 0, 각        │
+  │ Baseline  │ 발행 → 모두 처리 후 ack        │ service 1 instance만 처리 │
+  ├───────────┼────────────────────────────────┼───────────────────────────┤
+  │ 2. 부분   │ C의 consumeCtx.Stop() → 5      │ Stream.Msgs: 5 (보존됨!), │
+  │ ack 후    │ 메시지 발행 → A/B만 ack        │  Consumer[C].NumPending:  │
+  │ 보존      │                                │ 5                         │
+  ├───────────┼────────────────────────────────┼───────────────────────────┤
+  │ 3. 복구   │ C 재시작                       │ Stream.Msgs: 0 (모두 ack  │
+  │ 후 자동   │ (CreateOrUpdateConsumer 재호출 │ 완료 → InterestPolicy로   │
+  │ 삭제      │  + Consume) → 밀린 5개 처리 후 │ 삭제)                     │
+  │           │  ack                           │                           │
+  ├───────────┼────────────────────────────────┼───────────────────────────┤
+  │ 4. 서버   │ 모든 consumer Stop → 5 메시지  │ 재시작 전후 Stream.Msgs:  │
+  │ 재시작    │ 발행 → 사용자에게 docker       │ 5 유지, 재연결 후 정상    │
+  │ 영속성    │ compose restart nats 안내 후   │ 처리                      │
+  │           │ stdin 대기 → 재연결 → 처리     │                           │
+  └───────────┴────────────────────────────────┴───────────────────────────┘
+
+  Phase 4 사용자 인터랙션
+
+  >>> Phase 4: 서버 재시작 영속성 테스트
+  >>> 메시지 5개 발행 완료. Stream.Msgs = 5
+  >>> 별도 터미널에서 다음 명령 실행 후 Enter:
+  >>>   docker compose restart nats
+  [사용자 Enter]
+  >>> 재연결 시도 중...
+  >>> Stream.Msgs = 5 (재시작에도 보존됨!)
+
+  구현 단계
+
+  1. 폴더 생성 + docker-compose.yaml (volume mount로 데이터 영속)
+  2. nats.conf 작성 (JetStream + store_dir)
+  3. go.mod 초기화, nats.go 의존성 추가
+  4. main.go:
+    - 공통 헬퍼: printStreamState(), runService(), stopService()
+    - Phase 1~4 순차 실행
+  5. readme.md: 시나리오 의도 + InterestPolicy 매커니즘 + 실행 결과 예시
+
+  위험/주의사항
+
+  - InterestPolicy는 메시지 발행 시점에 등록된 consumer 기준으로 interest를
+  판단합니다. Phase 2에서 C consumer가 Stop돼 있어도 durable이 stream에 
+  남아있으면 interest는 유지됨 → 이게 정확히 우리가 원하는 동작
+  - Phase 4에서 nats.Connect에 재연결 옵션(MaxReconnects(-1), ReconnectWait)
+  필수
+  - AckWait 너무 짧으면 Phase 2에서 의도치 않은 redelivery 발생 → 30s 권장
+
+  ---
+  이 plan으로 진행하면 될까요? OK 하시면 폴더 만들고 구현 시작합니다. 수정
+  원하는 부분 있으면 알려주세요.
+
+✻ Brewed for 42s
+
+❯ ok                                                                            
+
+● 진행합니다. 먼저 task 트래킹 설정하고 구현 시작할게요.
+● 기존 docker-compose / nats.conf 참고용으로 한 번 보고 시작할게요.
+
+  Read 3 files (ctrl+o to expand)
+
+● Bash(mkdir -p
+      C:/Users/samsung/Desktop/starfruit-nats-lab/jetstreamFanoutInterestPolicy)
+  ⎿  Done
+
+● 기존 setup의 중요한 차이: 기존 nats.conf는 store_dir만 있고 docker volume
+  mount가 없어서 컨테이너 재시작 시 데이터가 날아감. Phase 4(서버 재시작 영속성)
+   검증하려면 volume mount 필수.
+
+● Write(docker-compose.yaml)
+  ⎿  Wrote 15 lines to docker-compose.yaml
+       1 version: "3.5"
+       2 
+       3 services:
+       4   nats-hub-server-1:
+       5     image: nats
+       6     ports:
+       7       - "4222:4222"
+       8       - "8222:8222"
+       9     volumes:
+      10       - ./nats.conf:/etc/nats/nats.conf
+     … +5 lines (ctrl+o to expand)
+
+● Write(nats.conf)
+  ⎿  Wrote 5 lines to nats.conf
+      1 port: 4222
+      2 http_port: 8222
+      3 jetstream {
+      4     store_dir="/starfruit/cluster"
+      5 }
+
+● Bash(cd
+      C:/Users/samsung/Desktop/starfruit-nats-lab/jetstreamFanoutInterestPolicy
+      && go mod init jetstreamFanoutInterestPolicy && go get
+      github.com/nats-io/nats.go@v…)
+  ⎿  go: creating new go.mod: module jetstreamFanoutInterestPolicy
+     go: added github.com/klauspost/compress v1.18.0
+     go: added github.com/nats-io/nats.go v1.43.0
+     … +4 lines (ctrl+o to expand)
+
+● 이제 main.go 작성합니다. 핵심 검증 포인트는 각 phase 끝에 Stream.Msgs와 각
+  consumer의 NumPending을 찍어서 보여주는 것.
+
+● Write(main.go)
+  ⎿  Wrote 230 lines to main.go
+      1 package main
+      2 
+      3 import (
+      4         "bufio"
+      5         "context"
+      6         "fmt"
+      7         "log"
+      8         "os"
+      9         "time"
+     … +234 lines (ctrl+o to expand)
+
+● Bash(cd
+      C:/Users/samsung/Desktop/starfruit-nats-lab/jetstreamFanoutInterestPolicy
+      && go build ./...)
+  ⎿  (No output)
+  ⎿  Found 1 new diagnostic issue in 1 file (ctrl+o to expand)
+
+● Bash(cd
+      C:/Users/samsung/Desktop/starfruit-nats-lab/jetstreamFanoutInterestPolicy
+      && go mod tidy)
+  ⎿  (No output)
+
+● Bash(cd
+      C:/Users/samsung/Desktop/starfruit-nats-lab/jetstreamFanoutInterestPolicy
+      && go vet ./...)
+  ⎿  (No output)
+● 빌드 성공. Phase 4 직전에 advisor에 한 번 더 점검 요청해서 함정 없는지
+  확인하겠습니다.
+
+● Advising using Opus 4.7
+  ⎿  ✔ Advisor has reviewed the conversation and will apply the feedback
+
+● 차단 이슈(Phase 4 race) + 작은 개선 한 번에 반영합니다.
+
+● Update(main.go)
+  ⎿  Added 3 lines
+      69    }
+      70    log.Printf(">> Stream 생성: %s (Retention=Interest, Storage=F
+          ile)", streamName)
+      71  
+      72 +  log.Println(">> 시작 시점 stream 상태 (재실행 시 잔존 데이터 
+         +확인용):")                                                     
+      73 +  printStreamState(ctx, stream)                                
+      74 +                                                               
+      75    handles := make(map[string]*ServiceHandle)
+      76    for _, sd := range serviceDurables {
+      77      handles[sd.name] = startService(ctx, stream, sd.name, sd.du
+          rable)
+
+● Update(main.go)
+  ⎿  Added 3 lines, removed 2 lines
+      113    log.Println(">> 재시작 직전 stream 상태:")
+      114    printStreamState(ctx, stream)
+      115  
+      116 -  log.Println("\n>>> 별도 터미널에서 다음 명령 실행 후 Enter를
+          - 누르세요:")                                                  
+      116 +  log.Println("\n>>> 현재 터미널은 그대로 두고, 별도 터미널에 
+          +서 아래 명령 실행 후 Enter를 누르세요:")                      
+      117    log.Println(">>>   docker compose restart nats-hub-server-1"
+           )
+      118 +  log.Println(">>>   (구버전 docker는: docker-compose restart 
+          +nats-hub-server-1)")                                          
+      119    bufio.NewReader(os.Stdin).ReadBytes('\n')
+      120  
+      121    log.Println(">> 재연결 대기 중...")
+      122    waitReconnect(nc, 30*time.Second)
+      123  
+      123 -  stream, err = js.Stream(ctx, streamName)                    
+      124 +  stream, err = waitForStream(ctx, js, streamName, 15*time.Sec
+          +ond)                                                          
+      125    if err != nil {
+      126      log.Fatalf("재연결 후 스트림 조회 실패: %v", err)
+      127    }
+
+● Update(main.go)
+  ⎿  Added 14 lines
+      222    log.Printf(">> waitForStreamDrain 타임아웃 (%s)", timeout)
+      223  }
+      224  
+      225 +func waitForStream(ctx context.Context, js jetstream.JetStream
+          +, name string, timeout time.Duration) (jetstream.Stream, error
+          +) {                                                           
+      226 +  deadline := time.Now().Add(timeout)                         
+      227 +  var lastErr error                                           
+      228 +  for time.Now().Before(deadline) {                           
+      229 +    s, err := js.Stream(ctx, name)                            
+      230 +    if err == nil {                                           
+      231 +      return s, nil                                           
+      232 +    }                                                         
+      233 +    lastErr = err                                             
+      234 +    time.Sleep(500 * time.Millisecond)                        
+      235 +  }                                                           
+      236 +  return nil, lastErr                                         
+      237 +}                                                             
+      238 +                                                              
+      239  func waitReconnect(nc *nats.Conn, timeout time.Duration) {
+      240    deadline := time.Now().Add(timeout)
+      241    for time.Now().Before(deadline) {
+
+● Bash(cd
+      C:/Users/samsung/Desktop/starfruit-nats-lab/jetstreamFanoutInterestPolicy
+      && go build ./... && go vet ./...)
+  ⎿  (No output)
+
+● 구현 완료. 빌드도 통과. 이제 실행하면 되는데, Phase 4에 사용자 인터랙션(별도
+  터미널에서 docker restart 후 Enter)이 들어가서 제가 자동 실행하기 애매합니다.
+
+  사용자가 직접 실행해주세요
+
+  cd C:/Users/samsung/Desktop/starfruit-nats-lab/jetstreamFanoutInterestPolicy
+  docker compose up -d
+  go run main.go
+
+  Phase 4에서 안내 문구 뜨면 별도 터미널에서:
+  cd C:/Users/samsung/Desktop/starfruit-nats-lab/jetstreamFanoutInterestPolicy
+  docker compose restart nats-hub-server-1
+  실행하고 원래 터미널에서 Enter.
+
+  검증 포인트 체크리스트
+
+  ┌─────────────────────┬───────────────────────────────────────────┐
+  │        Phase        │                 기대 결과                 │
+  ├─────────────────────┼───────────────────────────────────────────┤
+  │ Phase 1 끝          │ Stream.Msgs = 0, 모든 NumPending=0        │
+  ├─────────────────────┼───────────────────────────────────────────┤
+  │ Phase 2 끝          │ Stream.Msgs = 5, A/B는 0, C: NumPending=5 │
+  ├─────────────────────┼───────────────────────────────────────────┤
+  │ Phase 3 끝          │ Stream.Msgs = 0 (C 처리 후 자동 삭제)     │
+  ├─────────────────────┼───────────────────────────────────────────┤
+  │ Phase 4 재시작 직후 │ Stream.Msgs = 5 (영속성 유지)             │
+  ├─────────────────────┼───────────────────────────────────────────┤
+  │ Phase 4 끝          │ Stream.Msgs = 0                           │
+  └─────────────────────┴───────────────────────────────────────────┘
+
+  실행 결과 (특히 각 phase의 stream 상태 출력)를 붙여주시면, 결과 분석하고
+  readme.md 작성으로 넘어가겠습니다. 예상과 다른 동작이 나오면 거기서 디버깅
+  하구요.
+
+✻ Churned for 6m 49s
+
+※ recap: JetStream + InterestPolicy로 fanout + 메시지 유실 방지 PoC 구현 완료, jetstreamFanoutInterestPolicy 폴더에 4-phase 검증 코드까지 빌드 통과 상태입니다. 다음 액션은 사용자가 docker compose up -d 후 go run main.go 실행하고 결과 공유하는 것입니다. (disable recaps in /config)
+
+❯ PS C:\Users\samsung\Desktop\starfruit-nats-lab\jetstreamFanoutInterestPolicy> 
+   go run .\main.go                                                             
+                                                                                
+  2026/04/27 22:43:51 === JetStream Fanout + InterestPolicy PoC ===             
+  2026/04/27 22:43:51 >> Stream 생성: eventSink (Retention=Interest,            
+  Storage=File)                                                                 
+  2026/04/27 22:43:51 >> 시작 시점 stream 상태 (재실행 시 잔존 데이터 확인용):  
+  2026/04/27 22:43:51 ┌─ Stream 상태 ──────────────────────────────             
+  2026/04/27 22:43:51 │  Stream.Msgs = 0                                        
+  2026/04/27 22:43:51 │  [serviceA/QueueGroupA] consumer 조회 실패: nats: API   
+  error: code=404 err_code=10014 description=consumer not found                 
+  2026/04/27 22:43:51 │  [serviceB/QueueGroupB] consumer 조회 실패: nats: API   
+  error: code=404 err_code=10014 description=consumer not found                 
+  2026/04/27 22:43:51 │  [serviceC/QueueGroupC] consumer 조회 실패: nats: API   
+  error: code=404 err_code=10014 description=consumer not found                 
+  2026/04/27 22:43:51 └────────────────────────────────────────────             
+  2026/04/27 22:43:51 >> serviceA 시작 (durable=QueueGroupA, instances=3)       
+  2026/04/27 22:43:51 >> serviceB 시작 (durable=QueueGroupB, instances=3)       
+  2026/04/27 22:43:51 >> serviceC 시작 (durable=QueueGroupC, instances=3)       
+  2026/04/27 22:43:52                                                           
+  ========== Phase 1: Baseline ==========                                       
+  2026/04/27 22:43:52 모든 서비스 가동 → 5 메시지 발행 → 모든 서비스 ack 후     
+  Stream.Msgs = 0 검증                                                          
+  2026/04/27 22:43:52 >> 5개 메시지 발행 (prefix=P1)                            
+  2026/04/27 22:43:52 [처리] serviceA-2 | durable=QueueGroupA |                 
+  data=P1-Event-002                                                             
+  2026/04/27 22:43:52 [처리] serviceC-3 | durable=QueueGroupC |                 
+  data=P1-Event-003                                                             
+  2026/04/27 22:43:52 [처리] serviceA-1 | durable=QueueGroupA |                 
+  data=P1-Event-001                                                             
+  2026/04/27 22:43:52 [처리] serviceC-2 | durable=QueueGroupC |                 
+  data=P1-Event-002                                                             
+  2026/04/27 22:43:52 [처리] serviceB-2 | durable=QueueGroupB |                 
+  data=P1-Event-002                                                             
+  2026/04/27 22:43:52 [처리] serviceA-3 | durable=QueueGroupA |                 
+  data=P1-Event-003                                                             
+  2026/04/27 22:43:52 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P1-Event-001                                                             
+  2026/04/27 22:43:52 [처리] serviceB-1 | durable=QueueGroupB |                 
+  data=P1-Event-001                                                             
+  2026/04/27 22:43:52 [처리] serviceB-3 | durable=QueueGroupB |                 
+  data=P1-Event-003                                                             
+  2026/04/27 22:43:52 [처리] serviceA-1 | durable=QueueGroupA |                 
+  data=P1-Event-004                                                             
+  2026/04/27 22:43:52 [처리] serviceA-2 | durable=QueueGroupA |                 
+  data=P1-Event-005                                                             
+  2026/04/27 22:43:52 [처리] serviceB-1 | durable=QueueGroupB |                 
+  data=P1-Event-004                                                             
+  2026/04/27 22:43:52 [처리] serviceB-2 | durable=QueueGroupB |                 
+  data=P1-Event-005                                                             
+  2026/04/27 22:43:52 [처리] serviceC-2 | durable=QueueGroupC |                 
+  data=P1-Event-005                                                             
+  2026/04/27 22:43:52 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P1-Event-004                                                             
+  2026/04/27 22:43:52 ┌─ Stream 상태 ──────────────────────────────             
+  2026/04/27 22:43:52 │  Stream.Msgs = 0                                        
+  2026/04/27 22:43:52 │  [serviceA/QueueGroupA] NumPending=0, NumAckPending=0   
+  2026/04/27 22:43:52 │  [serviceB/QueueGroupB] NumPending=0, NumAckPending=0   
+  2026/04/27 22:43:52 │  [serviceC/QueueGroupC] NumPending=0, NumAckPending=0   
+  2026/04/27 22:43:52 └────────────────────────────────────────────             
+  2026/04/27 22:43:52                                                           
+  ========== Phase 2: 부분 ack 후 보존 ==========                               
+  2026/04/27 22:43:52 serviceC 정지 → 5 메시지 발행 → A/B만 ack → Stream.Msgs = 
+   5 보존 검증                                                                  
+  2026/04/27 22:43:52 >> serviceC 정지 완료                                     
+  2026/04/27 22:43:52 >> 5개 메시지 발행 (prefix=P2)                            
+  2026/04/27 22:43:53 [처리] serviceB-1 | durable=QueueGroupB |                 
+  data=P2-Event-002                                                             
+  2026/04/27 22:43:53 [처리] serviceB-3 | durable=QueueGroupB |                 
+  data=P2-Event-001                                                             
+  2026/04/27 22:43:53 [처리] serviceB-2 | durable=QueueGroupB |                 
+  data=P2-Event-003                                                             
+  2026/04/27 22:43:53 [처리] serviceA-2 | durable=QueueGroupA |                 
+  data=P2-Event-003                                                             
+  2026/04/27 22:43:53 [처리] serviceA-3 | durable=QueueGroupA |                 
+  data=P2-Event-001                                                             
+  2026/04/27 22:43:53 [처리] serviceA-1 | durable=QueueGroupA |                 
+  data=P2-Event-002                                                             
+  2026/04/27 22:43:53 [처리] serviceB-1 | durable=QueueGroupB |                 
+  data=P2-Event-005                                                             
+  2026/04/27 22:43:53 [처리] serviceA-3 | durable=QueueGroupA |                 
+  data=P2-Event-004                                                             
+  2026/04/27 22:43:53 [처리] serviceB-3 | durable=QueueGroupB |                 
+  data=P2-Event-004                                                             
+  2026/04/27 22:43:53 [처리] serviceA-1 | durable=QueueGroupA |                 
+  data=P2-Event-005                                                             
+  2026/04/27 22:43:55 ┌─ Stream 상태 ──────────────────────────────             
+  2026/04/27 22:43:55 │  Stream.Msgs = 5                                        
+  2026/04/27 22:43:55 │  [serviceA/QueueGroupA] NumPending=0, NumAckPending=0   
+  2026/04/27 22:43:55 │  [serviceB/QueueGroupB] NumPending=0, NumAckPending=0   
+  2026/04/27 22:43:55 │  [serviceC/QueueGroupC] NumPending=5, NumAckPending=0   
+  2026/04/27 22:43:55 └────────────────────────────────────────────             
+  2026/04/27 22:43:55                                                           
+  ========== Phase 3: 복구 후 자동 삭제 ==========                              
+  2026/04/27 22:43:55 serviceC 재시작 → 밀린 5개 처리 → 모든 ack 완료 →         
+  Stream.Msgs = 0 검증                                                          
+  2026/04/27 22:43:55 >> serviceC 시작 (durable=QueueGroupC, instances=3)       
+  2026/04/27 22:43:56 [처리] serviceC-2 | durable=QueueGroupC |                 
+  data=P2-Event-002                                                             
+  2026/04/27 22:43:56 [처리] serviceC-3 | durable=QueueGroupC |                 
+  data=P2-Event-003                                                             
+  2026/04/27 22:43:56 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P2-Event-001                                                             
+  2026/04/27 22:43:56 [처리] serviceC-2 | durable=QueueGroupC |                 
+  data=P2-Event-005                                                             
+  2026/04/27 22:43:56 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P2-Event-004                                                             
+  2026/04/27 22:43:56 ┌─ Stream 상태 ──────────────────────────────             
+  2026/04/27 22:43:56 │  Stream.Msgs = 0                                        
+  2026/04/27 22:43:56 │  [serviceA/QueueGroupA] NumPending=0, NumAckPending=0   
+  2026/04/27 22:43:56 │  [serviceB/QueueGroupB] NumPending=0, NumAckPending=0   
+  2026/04/27 22:43:56 │  [serviceC/QueueGroupC] NumPending=0, NumAckPending=0   
+  2026/04/27 22:43:56 └────────────────────────────────────────────             
+  2026/04/27 22:43:56                                                           
+  ========== Phase 4: 서버 재시작 영속성 ==========                             
+  2026/04/27 22:43:56 모든 서비스 정지 → 5 메시지 발행 → docker restart →       
+  메시지 보존 검증                                                              
+  2026/04/27 22:43:56 >> 모든 서비스 정지 완료                                  
+  2026/04/27 22:43:56 >> 5개 메시지 발행 (prefix=P4)                            
+  2026/04/27 22:43:57 >> 재시작 직전 stream 상태:                               
+  2026/04/27 22:43:57 ┌─ Stream 상태 ──────────────────────────────             
+  2026/04/27 22:43:57 │  Stream.Msgs = 5                                        
+  2026/04/27 22:43:57 │  [serviceA/QueueGroupA] NumPending=5, NumAckPending=0   
+  2026/04/27 22:43:57 │  [serviceB/QueueGroupB] NumPending=5, NumAckPending=0   
+  2026/04/27 22:43:57 │  [serviceC/QueueGroupC] NumPending=5, NumAckPending=0   
+  2026/04/27 22:43:57 └────────────────────────────────────────────             
+  2026/04/27 22:43:57                                                           
+  >>> 현재 터미널은 그대로 두고, 별도 터미널에서 아래 명령 실행 후 Enter를      
+  누르세요:                                                                     
+  2026/04/27 22:43:57 >>>   docker compose restart nats-hub-server-1            
+  2026/04/27 22:43:57 >>>   (구버전 docker는: docker-compose restart            
+  nats-hub-server-1)                                                            
+  2026/04/27 22:44:56 >> NATS 연결 끊김: EOF                                    
+  2026/04/27 22:44:58 >> NATS 재연결 성공: nats://localhost:4222                
+                                                                                
+  2026/04/27 22:45:13 >> 재연결 대기 중...                                      
+  2026/04/27 22:45:13 >> 재시작 직후 stream 상태 (메시지가 보존되어야 함):      
+  2026/04/27 22:45:13 ┌─ Stream 상태 ──────────────────────────────             
+  2026/04/27 22:45:13 │  Stream.Msgs = 5                                        
+  2026/04/27 22:45:13 │  [serviceA/QueueGroupA] NumPending=5, NumAckPending=0   
+  2026/04/27 22:45:13 │  [serviceB/QueueGroupB] NumPending=5, NumAckPending=0   
+  2026/04/27 22:45:13 │  [serviceC/QueueGroupC] NumPending=5, NumAckPending=0   
+  2026/04/27 22:45:13 └────────────────────────────────────────────             
+  2026/04/27 22:45:13 >> 모든 서비스 재시작 → 메시지 처리...                    
+  2026/04/27 22:45:13 >> serviceA 시작 (durable=QueueGroupA, instances=3)       
+  2026/04/27 22:45:13 >> serviceB 시작 (durable=QueueGroupB, instances=3)       
+  2026/04/27 22:45:13 >> serviceC 시작 (durable=QueueGroupC, instances=3)       
+  2026/04/27 22:45:13 [처리] serviceA-1 | durable=QueueGroupA |                 
+  data=P4-Event-001                                                             
+  2026/04/27 22:45:13 [처리] serviceA-2 | durable=QueueGroupA |                 
+  data=P4-Event-002                                                             
+  2026/04/27 22:45:13 [처리] serviceB-1 | durable=QueueGroupB |                 
+  data=P4-Event-001                                                             
+  2026/04/27 22:45:13 [처리] serviceB-2 | durable=QueueGroupB |                 
+  data=P4-Event-002                                                             
+  2026/04/27 22:45:13 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P4-Event-001                                                             
+  2026/04/27 22:45:13 [처리] serviceA-1 | durable=QueueGroupA |                 
+  data=P4-Event-003                                                             
+  2026/04/27 22:45:13 [처리] serviceA-2 | durable=QueueGroupA |                 
+  data=P4-Event-004                                                             
+  2026/04/27 22:45:13 [처리] serviceB-2 | durable=QueueGroupB |                 
+  data=P4-Event-004                                                             
+  2026/04/27 22:45:13 [처리] serviceB-1 | durable=QueueGroupB |                 
+  data=P4-Event-003                                                             
+  2026/04/27 22:45:13 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P4-Event-002                                                             
+  2026/04/27 22:45:13 [처리] serviceA-1 | durable=QueueGroupA |                 
+  data=P4-Event-005                                                             
+  2026/04/27 22:45:13 [처리] serviceB-1 | durable=QueueGroupB |                 
+  data=P4-Event-005                                                             
+  2026/04/27 22:45:13 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P4-Event-003                                                             
+  2026/04/27 22:45:13 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P4-Event-004                                                             
+  2026/04/27 22:45:13 [처리] serviceC-1 | durable=QueueGroupC |                 
+  data=P4-Event-005                                                             
+  2026/04/27 22:45:13 >> 처리 완료 후 stream 상태:                              
+  2026/04/27 22:45:13 ┌─ Stream 상태 ──────────────────────────────             
+  2026/04/27 22:45:13 │  Stream.Msgs = 0                                        
+  2026/04/27 22:45:13 │  [serviceA/QueueGroupA] NumPending=0, NumAckPending=0   
+  2026/04/27 22:45:13 │  [serviceB/QueueGroupB] NumPending=0, NumAckPending=0   
+  2026/04/27 22:45:13 │  [serviceC/QueueGroupC] NumPending=0, NumAckPending=0   
+  2026/04/27 22:45:13 └────────────────────────────────────────────             
+  2026/04/27 22:45:13                                                           
+  === PoC 종료 ===                                                              
+  2026/04/27 22:45:13 >> NATS 연결 끊김: <nil>                                  
+
+● 완벽한 결과입니다. 모든 phase가 예상대로 동작했어요.
+
+● 검증 결과 요약
+
+  ┌────────────────┬─────────────────────┬─────────────────────┬────────────┐
+  │     Phase      │        기대         │        실제         │    결과    │
+  ├────────────────┼─────────────────────┼─────────────────────┼────────────┤
+  │ 1 (Baseline)   │ Stream.Msgs=0, 모두 │ Msgs=0, 각 service  │ ✓          │
+  │                │  ack                │ Pending=0           │            │
+  ├────────────────┼─────────────────────┼─────────────────────┼────────────┤
+  │ 2 (부분 ack    │ Msgs=5, C만         │ Msgs=5, A/B=0, C=5  │ ✓ 핵심     │
+  │ 보존)          │ Pending=5           │                     │ 검증       │
+  ├────────────────┼─────────────────────┼─────────────────────┼────────────┤
+  │ 3 (복구 후     │ Msgs=0              │ Msgs=0              │ ✓          │
+  │ 삭제)          │                     │                     │            │
+  ├────────────────┼─────────────────────┼─────────────────────┼────────────┤
+  │ 4 재시작 직전  │ Msgs=5              │ Msgs=5, 모두        │ ✓          │
+  │                │                     │ Pending=5           │            │
+  ├────────────────┼─────────────────────┼─────────────────────┼────────────┤
+  │ 4 재시작 직후  │ Msgs=5 (영속)       │ Msgs=5              │ ✓ 영속성   │
+  │                │                     │                     │ 입증       │
+  ├────────────────┼─────────────────────┼─────────────────────┼────────────┤
+  │ 4 처리 후      │ Msgs=0              │ Msgs=0              │ ✓          │
+  └────────────────┴─────────────────────┴─────────────────────┴────────────┘
+
+  또한 fanout + queue group이 정확히 작동: 예) P1-Event-001은 3개 서비스 
+  각각에서 1번씩 처리됨 (serviceA-1, serviceB-1, serviceC-1) — 같은 서비스 내
+  다른 인스턴스는 안 받음.
+
+  이제 readme 작성합니다.
+
+● Write(readme.md)
+  ⎿  Wrote 181 lines to readme.md
+       2 # JetStream Fanout + InterestPolicy
+       3 ## 목적
+       4 
+       5 기존 `queueGroupWithFanout`은 Core NATS pub/sub 기반이라 **서비
+         스 다운타임 동안 발행된 메시지가 유실**됩니다.
+         estPolicy`** 로 구현하여:queue group 패턴을 **JetStream + `Inter
+       7 
+       8 1. fanout (모든 서비스가 메시지 수신)
+       9 2. 서비스 내 단일 인스턴스 처리 (queue group 효과)
+      10 3. **모든 서비스가 ack해야 stream에서 삭제** (메시지 유실 방지)
+     … +205 lines (ctrl+o to expand)
+
+● PoC 완성
+
+  산출물
+
+  - jetstreamFanoutInterestPolicy/docker-compose.yaml — JetStream + 영속 volume
+  - jetstreamFanoutInterestPolicy/nats.conf — JetStream 활성화
+  - jetstreamFanoutInterestPolicy/main.go — 4 phase 시퀀스
+  - jetstreamFanoutInterestPolicy/readme.md — 의도, 매핑 표, 결과 분석
+
+  검증된 핵심 결론
+
+  1. Retention: InterestPolicy + Storage: FileStorage 조합으로 fanout + queue 
+  group + 메시지 유실 방지 동시 달성
+  2. consumeCtx.Stop()은 durable consumer를 서버에 남김 → InterestPolicy의
+  interest 유지 (Phase 2 핵심 동작의 메커니즘)
+  3. docker volume mount + FileStorage로 NATS 서버 재시작에도 메시지 보존 (Phase
+   4 입증)
+
+  기존 queueGroupWithFanout의 Core NATS 한계를 JetStream으로 안전하게 대체
+  가능함을 확인.
+
+✻ Sautéed for 1m 20s
