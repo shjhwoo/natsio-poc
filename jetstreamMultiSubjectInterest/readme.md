@@ -1,12 +1,19 @@
-# JetStream Multi-Subject InterestPolicy PoC
+# JetStream InterestPolicy × Competing Consumers PoC
 
 ## 검증 목적
 
-JetStream의 `InterestPolicy`는 **스트림에 등록된 모든 consumer가 ack하면 메시지를 삭제**한다.
+JetStream에서 **두 가지 동작이 같은 스트림 위에서 동시에 성립**하는지 검증한다.
 
-그런데 consumer마다 `FilterSubjects`가 다를 때 — 즉, 특정 subject를 구독하지 않는 consumer가 있을 때 — 그 consumer의 존재가 해당 subject 메시지의 삭제 조건에 영향을 주는지 확인한다.
+1. **InterestPolicy (subject별 삭제 조건)**
+   `InterestPolicy`는 "해당 메시지의 subject를 `FilterSubjects`에 포함한 모든 durable consumer가 ack했을 때" 메시지를 삭제한다. 서비스마다 관심 있는 subject 집합이 다른 fanout 구조에서 이 조건이 subject 단위로 정확히 적용되는지 확인한다.
 
-**핵심 질문**: subject2를 구독하지 않는 ConsumerC가 내려가 있을 때, subject2 메시지는 삭제되는가?
+2. **Competing Consumers (durable 내부 인스턴스 분산)**
+   하나의 durable consumer에 **여러 인스턴스(클라이언트)**가 `Consume()`으로 붙으면 서버가 해당 인스턴스들에게 메시지를 **중복 없이 분산**해 전달한다. 인스턴스 장애 시 살아있는 인스턴스로 failover가 일어나는지, 복구 시 다시 분산 상태로 돌아오는지 확인한다.
+
+두 동작이 **서로 간섭 없이** 함께 성립해야 한다.
+- 인스턴스 레벨 분산이 일어나도 (= 같은 durable의 어떤 인스턴스가 ack해도) durable 전체 ack로 집계되어 InterestPolicy의 삭제 조건이 정상 동작
+- 인스턴스 중 일부가 죽어도 같은 durable의 다른 인스턴스가 ack를 처리하는 한 InterestPolicy 관점에서는 영향이 없어야 함
+- 같은 streamSeq를 같은 durable 내 두 인스턴스가 동시에 받지 않아야 함 (중복 처리 0)
 
 ---
 
@@ -21,7 +28,7 @@ JetStream의 `InterestPolicy`는 **스트림에 등록된 모든 consumer가 ack
 | Retention | `InterestPolicy` |
 | Storage | `FileStorage` |
 
-### Consumer 구독 관계
+### Consumer 구독 관계 (durable 단위)
 
 | Consumer | FilterSubjects | 의미 |
 |----------|---------------|------|
@@ -36,110 +43,88 @@ serviceB  →    ✅        ✅        ✗
 serviceC  →    ✅        ✗        ✅
 ```
 
----
+### 인스턴스 구성
 
-## 테스트 시나리오 및 결과
+`instanceCount = 2` — 각 durable에 인스턴스 2개가 같이 붙는다.
 
-### Phase 1 — 전체 서비스 가동, 모든 subject에 발행
-
-**시나리오**: A, B, C 모두 가동 → subject1·2·3에 각 3개 발행
-
-**예상**: 각 consumer는 자신의 FilterSubjects에 해당하는 메시지만 수신·ack → 전부 삭제
-
-**결과**:
 ```
-Stream.Msgs = 0
-ConsumerA: NumPending=0, NumAckPending=0
-ConsumerB: NumPending=0, NumAckPending=0
-ConsumerC: NumPending=0, NumAckPending=0
+                durable             instances
+serviceA  →  ConsumerA  →  [ inst1, inst2 ]   ← 같은 durable을 공유
+serviceB  →  ConsumerB  →  [ inst1, inst2 ]
+serviceC  →  ConsumerC  →  [ inst1, inst2 ]
 ```
 
-수신 로그를 보면 subject1은 A·B·C 모두, subject2는 A·B만, subject3은 C만 수신한 것을 확인할 수 있다.
+### 중복 감지 방법
+
+`ServiceHandle.processed`는 `streamSeq → instanceID` 맵이다. 메시지 처리 시 `recordAndCheck(seq, instanceID)`가 호출되어 같은 stream sequence가 이미 다른 인스턴스에 기록돼 있으면 **중복 처리**로 카운트한다. 동일 durable 인스턴스 간 분산이 깨질 때에만 중복이 발생한다.
 
 ---
 
-### Phase 2 — serviceC 중단 후 subject2 발행
+## 테스트 시나리오 및 기대 결과
 
-**시나리오**: C를 정지 → subject2에 3개 발행 → A·B만 ack
+각 subject에 `msgsPerSubject = 10`개씩 발행한다.
 
-**예상**: ConsumerC의 FilterSubjects에 subject2가 없으므로, C의 존재는 subject2 메시지 삭제 조건에 무관 → **Stream.Msgs = 0**
+### Phase 1 — 정상 상태: 모든 서비스 × 인스턴스 2개 가동
 
-**결과**:
-```
-Stream.Msgs = 0
-ConsumerA: NumPending=0, NumAckPending=0
-ConsumerB: NumPending=0, NumAckPending=0
-ConsumerC: NumPending=0, NumAckPending=0  ← C가 꺼져도 subject2는 즉시 삭제
-```
+**시나리오**: 6개 인스턴스 모두 가동, subject1·2·3에 각 10개씩 발행
 
-**해석**: ConsumerC는 subject2에 대한 interest가 없기 때문에, 서버는 처음부터 "이 메시지를 기다리는 consumer는 A·B뿐"이라고 판단한다. C의 상태와 무관하게 A·B ack 즉시 삭제된다.
+**검증 포인트**
 
----
-
-### Phase 3 — serviceC 중단 상태에서 subject1 발행
-
-**시나리오**: C 정지 유지 → subject1에 3개 발행 → A·B만 ack
-
-**예상**: subject1은 C도 구독 → C의 durable consumer가 서버에 남아있어 메시지 보존 → **Stream.Msgs = 3**
-
-**결과**:
-```
-Stream.Msgs = 3
-ConsumerA: NumPending=0, NumAckPending=0
-ConsumerB: NumPending=0, NumAckPending=0
-ConsumerC: NumPending=3, NumAckPending=0  ← C가 아직 읽지 않음
-```
-
-**해석**: subject1은 ConsumerC의 FilterSubjects에 포함되므로, A·B가 ack해도 C가 ack하기 전까지 메시지가 보존된다. Phase 2와 대비되는 결과로, InterestPolicy의 삭제 조건이 subject 단위로 적용됨을 보여준다.
+- *InterestPolicy*:
+  - subject1 → A·B·C 모두 ack → 삭제
+  - subject2 → A·B만 interest 보유, 둘 다 ack → 삭제 (C는 애초에 후보가 아님)
+  - subject3 → C만 interest 보유, ack → 삭제
+  - 최종 `Stream.Msgs = 0`
+- *Competing Consumers*:
+  - 각 서비스의 inst1·inst2 처리 건수가 **둘 다 0이 아닌 값** (분산)
+  - 모든 서비스에서 `중복 : 0건`
 
 ---
 
-### Phase 4 — serviceC 복구
+### Phase 2 — serviceA inst1 장애 → inst2 단독 처리
 
-**시나리오**: C 재시작 → 밀린 subject1 메시지 처리
+**시나리오**: `serviceA-inst1` 정지 (durable `ConsumerA` 자체는 inst2가 잡고 있어 살아있음) → subject1·2에 각 10개 발행
 
-**예상**: ConsumerC NumPending 소진 → Stream.Msgs = 0
+**검증 포인트**
 
-**결과**:
-```
-Stream.Msgs = 0
-ConsumerA: NumPending=0, NumAckPending=0
-ConsumerB: NumPending=0, NumAckPending=0
-ConsumerC: NumPending=0, NumAckPending=0
-```
-
-C가 재연결하자마자 밀린 3개를 처리하고, 이후 즉시 삭제되었다.
-
----
-
-### Phase 5 — subject3 발행 (C만 구독)
-
-**시나리오**: 전체 가동 → subject3에 3개 발행 → C만 ack
-
-**예상**: A·B의 FilterSubjects에 subject3 없음 → C만 ack해도 즉시 삭제 → **Stream.Msgs = 0**
-
-**결과**:
-```
-Stream.Msgs = 0
-ConsumerA: NumPending=0, NumAckPending=0
-ConsumerB: NumPending=0, NumAckPending=0
-ConsumerC: NumPending=0, NumAckPending=0
-```
-
-subject3은 ConsumerA·B의 interest 대상이 아니므로, C 단독 ack만으로 삭제된다.
+- *InterestPolicy*:
+  - durable `ConsumerA`는 inst2를 통해 계속 ack 가능 → A·B·C(또는 A·B) 모든 durable이 ack 가능
+  - subject1·2 모두 정상 삭제, `Stream.Msgs = 0`
+  - → **인스턴스 일부 장애는 InterestPolicy의 삭제 조건에 영향을 주지 않는다**는 것을 확인
+- *Competing Consumers*:
+  - 정지된 `serviceA-inst1`의 카운트는 그대로 멈춤
+  - `serviceA-inst2`가 추가 메시지를 **혼자 모두** 처리 (failover)
+  - serviceB·C는 여전히 inst1·inst2가 분담
+  - 누적 중복 0건 유지
 
 ---
 
-## 결론
+### Phase 3 — serviceA inst1 복구
 
-> **InterestPolicy의 삭제 조건은 "해당 메시지의 subject를 FilterSubjects에 포함한 모든 durable consumer가 ack했는가"이다.**
+**시나리오**: 같은 durable `ConsumerA`에 `serviceA-inst1-recovered`를 attach → subject1·2에 각 10개 발행
 
-consumer가 존재하더라도 그 consumer의 FilterSubjects에 해당 subject가 포함되지 않으면, 그 consumer는 삭제 조건 계산에서 제외된다.
+**검증 포인트**
 
-Phase 2(subject2, C 미구독) vs Phase 3(subject1, C 구독)의 대비가 이를 가장 명확히 보여준다:
-- 같은 상황(C 중단)에서 subject2 메시지는 즉시 삭제, subject1 메시지는 C 복구 전까지 보존
+- *InterestPolicy*: 변함없이 정상 삭제, `Stream.Msgs = 0`
+- *Competing Consumers*:
+  - 복구된 inst1과 inst2가 다시 분산 처리 재개 (두 인스턴스 모두 카운트 증가)
+  - 누적 중복 0건 유지
 
-이 동작 덕분에 서비스마다 관심 있는 이벤트 타입이 다른 fanout 구조에서도 InterestPolicy가 정확하게 적용된다.
+---
+
+## 결론 출력
+
+마지막에 모든 서비스의 중복 건수를 합산해 PASS/FAIL을 출력한다.
+
+```
+========== 최종 검증 결과 ==========
+[PASS] serviceA: 중복 처리 없음
+[PASS] serviceB: 중복 처리 없음
+[PASS] serviceC: 중복 처리 없음
+>> 모든 서비스에서 Competing Consumers 정상 동작 확인
+```
+
+이와 함께 각 Phase 종료 시점의 `Stream.Msgs`가 0인지 확인하면 InterestPolicy도 같이 정상 동작했음을 입증할 수 있다.
 
 ---
 
@@ -152,3 +137,9 @@ docker compose up -d
 # 테스트 실행
 go run .
 ```
+
+실행 시 다음을 모두 만족해야 PoC 통과로 본다.
+
+1. 모든 Phase 종료 시 `Stream.Msgs = 0` (InterestPolicy 정상)
+2. 각 Phase에서 같은 durable의 인스턴스 카운트가 **분산** 또는 **failover** 양상으로 나타남 (Competing Consumers 정상)
+3. 누적 `중복 : 0건` (분산이 깨지지 않음)
