@@ -44,6 +44,8 @@
 2. **Phase 1-b**: `tgt-stream`을 Sources 없이 생성 → 각각 독립적으로 메시지 적재
 3. **Phase 1-c**: `tgt-stream`에 `Sources: [{Name: "src-stream"}]` 추가 시도
    - 성공 시: `src-stream`에 신규 메시지를 발행하여 `tgt-stream`에 흡수되는지 확인
+4. **Phase 1-d**: 이미 Sources가 설정된 `tgt-stream`에 두 번째 소스 스트림(`src-stream-2`) 추가 시도
+   - 성공 시: `src-stream-2`의 기존 메시지 소급 흡수 여부 + 신규 메시지 흡수 여부 확인
 
 ### Case 2 — Republish 추가
 
@@ -92,13 +94,22 @@ docker compose down -v
 
 ## 실행 결과 (NATS 2.x, nats.go v1.43.0)
 
-### Case 1 — Sources 추가
+### Case 1 — Sources 추가 및 배열 확장
+
+**Phase 1-c: Sources 최초 추가**
 
 - `CreateOrUpdateStream`에 `Sources: [{Name: "src-stream"}]`을 추가 → **성공**
 - `Config.Sources = [src-stream]` 즉시 반영
 - ⚠️ **Sources 추가 시점 이전에 소스 스트림에 쌓인 메시지도 소급 흡수된다.**
   - `src-stream`에 이미 3개 적재된 상태였고, 추가 후 신규 3개를 더 발행하자 `tgt-stream`의 `State.Msgs`가 2 → 8로 증가 (소급 3개 + 신규 3개)
   - `StartSeq`를 별도로 지정하지 않으면 소스 스트림의 첫 번째 메시지부터 가져온다
+
+**Phase 1-d: 운영 중 Sources 배열에 항목 추가**
+
+- 이미 `Sources: [src-stream]`이 설정된 상태에서 두 번째 소스 스트림(`src-stream-2`)을 배열에 추가 → **성공**
+- `Config.Sources = [src-stream, src-stream-2]` 즉시 반영
+- ⚠️ **새로 추가된 소스 스트림에 이미 쌓여 있던 메시지도 소급 흡수된다.**
+  - `src-stream-2`에 2개 적재 후 Sources에 추가, 이후 신규 3개 발행 → `tgt-stream`의 `State.Msgs`가 8 → 13 (소급 2개 + 신규 3개)
 
 ### Case 2 — Republish 추가
 
@@ -115,6 +126,6 @@ docker compose down -v
 
 운영 적용 시 주의할 점:
 
-1. **Sources 추가는 소급 적용됨**: `StartSeq`·`StartTime` 등을 명시하지 않으면 소스 스트림의 처음부터 메시지를 가져온다. 필요한 시점부터만 받으려면 `StreamSource.OptStartSeq` 또는 `OptStartTime`을 지정해야 한다.
+1. **Sources 추가·확장 모두 소급 적용됨**: 최초 추가 시뿐 아니라 배열에 새 항목을 추가할 때도 해당 소스 스트림의 처음부터 메시지를 가져온다. 필요한 시점부터만 받으려면 `StreamSource.OptStartSeq` 또는 `OptStartTime`을 지정해야 한다.
 2. **Republish는 추가 이후 메시지부터만 적용**: 기존에 스트림에 쌓인 메시지는 재발행되지 않는다.
 3. **두 설정 모두 제거도 가능**: `CreateOrUpdateStream`에서 해당 필드를 `nil` / 빈 슬라이스로 보내면 설정을 다시 제거할 수 있다.

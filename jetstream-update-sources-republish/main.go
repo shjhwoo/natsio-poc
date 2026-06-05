@@ -15,10 +15,12 @@ const (
 	natsURL = "nats://localhost:4222"
 
 	// Case 1: Sources 추가 검증에 쓰이는 스트림 이름
-	sourceStreamName = "src-stream"   // Sources의 원본 스트림
-	targetStreamName = "tgt-stream"   // Sources를 나중에 추가할 대상 스트림
-	sourceSubject    = "src.events.>" // sourceStream이 수집하는 subject
-	targetSubject    = "tgt.events.>" // targetStream이 수집하는 subject
+	sourceStreamName  = "src-stream"    // Sources의 원본 스트림
+	source2StreamName = "src-stream-2"  // Case 1-d: 두 번째 소스 스트림
+	targetStreamName  = "tgt-stream"    // Sources를 나중에 추가할 대상 스트림
+	sourceSubject     = "src.events.>"  // sourceStream이 수집하는 subject
+	source2Subject    = "src2.events.>" // source2Stream이 수집하는 subject
+	targetSubject     = "tgt.events.>"  // targetStream이 수집하는 subject
 
 	// Case 2: Republish 추가 검증에 쓰이는 스트림 이름
 	republishStreamName   = "repub-stream"
@@ -56,6 +58,7 @@ func runCase1Sources(ctx context.Context, js jetstream.JetStream) {
 
 	// 잔재 정리
 	_ = js.DeleteStream(ctx, sourceStreamName)
+	_ = js.DeleteStream(ctx, source2StreamName)
 	_ = js.DeleteStream(ctx, targetStreamName)
 
 	// Phase 1-a: 원본 스트림(sourceStream) 생성
@@ -119,6 +122,54 @@ func runCase1Sources(ctx context.Context, js jetstream.JetStream) {
 		time.Sleep(1 * time.Second)
 		printStreamInfo(ctx, srcStream, "발행 후 sourceStream")
 		printStreamInfo(ctx, updatedTgt, "발행 후 targetStream (Sources 경유 메시지 포함 여부)")
+	}
+
+	// Phase 1-d: 운영 중인 Sources 배열에 새 소스 스트림 추가
+	log.Println("\n[Phase 1-d] 운영 중에 Sources 배열에 두 번째 소스 스트림 추가")
+	log.Printf("  → Sources 현재: [%s]  →  추가 후: [%s, %s]", sourceStreamName, sourceStreamName, source2StreamName)
+
+	// 두 번째 소스 스트림 생성
+	_ = js.DeleteStream(ctx, source2StreamName)
+	src2Stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     source2StreamName,
+		Subjects: []string{source2Subject},
+		Storage:  jetstream.FileStorage,
+	})
+	if err != nil {
+		log.Fatalf("source2Stream 생성 실패: %v", err)
+	}
+	publish(ctx, js, "src2.events.before-add", 2) // 추가 전 미리 쌓아두기
+	printStreamInfo(ctx, src2Stream, "source2Stream 생성 직후 (메시지 2개 적재)")
+
+	// tgt-stream의 Sources에 src-stream-2 추가
+	updatedTgt2, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:     targetStreamName,
+		Subjects: []string{targetSubject},
+		Storage:  jetstream.FileStorage,
+		Sources: []*jetstream.StreamSource{
+			{Name: sourceStreamName},
+			{Name: source2StreamName},
+		},
+	})
+	if err != nil {
+		var apiErr *jetstream.APIError
+		if errors.As(err, &apiErr) {
+			log.Printf("✗ Sources 배열 확장 실패 (APIError): HTTP=%d ErrCode=%d desc=%q",
+				apiErr.Code, apiErr.ErrorCode, apiErr.Description)
+		} else {
+			log.Printf("✗ Sources 배열 확장 실패: %v", err)
+		}
+		log.Println("  → 결론: 운영 중인 Sources 배열에 항목을 추가할 수 없음")
+	} else {
+		log.Println("✓ Sources 배열 확장 성공")
+		printStreamInfo(ctx, updatedTgt2, "Sources 2개로 확장 직후 targetStream")
+
+		// 검증: 추가 전 src-stream-2에 쌓인 메시지 소급 흡수 여부 + 신규 메시지 흡수 여부
+		log.Println("  → src-stream-2에 신규 메시지 발행 후 targetStream 흡수 여부 확인")
+		publish(ctx, js, "src2.events.after-add", 3)
+		time.Sleep(1 * time.Second)
+		printStreamInfo(ctx, src2Stream, "발행 후 source2Stream")
+		printStreamInfo(ctx, updatedTgt2, "발행 후 targetStream (src-stream-2 메시지 포함 여부)")
 	}
 
 	log.Println("\n" + separator("Case 1 종료"))
