@@ -12,7 +12,7 @@
 2. JetStream stream seq: 서버가 메시지마다 매기는 단조 증가 번호. 편리하지만 스트림 수명에 묶인다.
 3. 타임스탬프: 스트림 수명과 무관하지만 클록 스큐, 동일 해상도 동률, 역행 위험이 있다.
 
-이 PoC는 (2)가 Purge와 delete/recreate에서 어떻게 동작하는지, (3)이 lifecycle 리셋 문제를 피하면서도 어떤 클록 한계를 갖는지 확인한다.
+이 PoC는 (2)가 Purge와 delete/recreate에서 어떻게 동작하는지, 추가로 MemoryStorage stream이 NATS 서버 재시작에서 어떤 수명 한계를 갖는지, (3)이 lifecycle 리셋 문제를 피하면서도 어떤 클록 한계를 갖는지 확인한다.
 
 ## 환경
 
@@ -100,6 +100,35 @@ docker compose up -d
 | MemoryStorage 실제값 | 동일. `applied=0 ignored=3 seqs=[1 2 3]` |
 | 결론 | 치명적 silent failure 재현. 에러 없이 새 이벤트가 전건 무시될 수 있다. |
 
+### Phase S-5 — NATS 서버 재시작 시 MemoryStorage stream 수명
+
+| 항목 | 내용 |
+|---|---|
+| 시나리오 | MemoryStorage stream에 10개 발행(seq 1~10) → NATS 서버 프로세스 재시작(`docker compose restart nats-server`) → stream 조회 및 재생성 후 1개 발행 |
+| 기대값 | MemoryStorage는 메모리 기반이므로 서버 재시작 후 stream 상태가 사라질 수 있음 |
+| MemoryStorage 재시작 전 | `before restart memory: msgs=10 first_seq=1 last_seq=10` |
+| MemoryStorage 재시작 후 조회 | `stream lookup error: nats: API error: code=404 err_code=10059 description=stream not found` |
+| MemoryStorage 재생성 후 발행 | `first publish seq=1 msgs=1 first_seq=1 last_seq=1` |
+| FileStorage 비교군 | 재시작 전 `msgs=10 first_seq=1 last_seq=10`, 재시작 후 발행 `seq=11 msgs=11 first_seq=1 last_seq=11` |
+| 결론 | MemoryStorage는 NATS 서버 재시작만으로 stream 자체가 사라지고, 같은 stream을 다시 만들면 seq가 1부터 시작한다. FileStorage는 같은 재시작 조건에서 seq continuity를 유지했다. |
+
+실제 확인 로그:
+
+```text
+publish before memory i=1 seq=1
+publish before memory i=10 seq=10
+before restart memory: msgs=10 first_seq=1 last_seq=10
+publish before file i=1 seq=1
+publish before file i=10 seq=10
+before restart file: msgs=10 first_seq=1 last_seq=10
+Container jetstreamseqversionpoc-nats-server-1  Restarting
+Container jetstreamseqversionpoc-nats-server-1  Started
+after restart memory: stream lookup error: nats: API error: code=404 err_code=10059 description=stream not found
+after restart recreated memory: first publish seq=1 msgs=1 first_seq=1 last_seq=1
+after restart before publish file: msgs=10 first_seq=1 last_seq=10
+after restart publish file: seq=11 msgs=11 first_seq=1 last_seq=11
+```
+
 ## Part 2 — 타임스탬프 기반
 
 ### Phase T-1 — Purge·재생성을 가로질러 단조성 유지되는가
@@ -137,6 +166,8 @@ docker compose up -d
 | Purge 후 seq | 전체 Purge/Keep/Sequence 모두 다음 발행 seq = 11 | H1 성립 |
 | delete+recreate 후 seq | 다음 발행 seq = 1 | H2 성립 |
 | 재생성 시 실패 모드 | stored=10 상태에서 새 seq 1,2,3 전건 무시 | 재현됨 |
+| MemoryStorage 서버 재시작 | stream lookup이 `stream not found`, 재생성 후 첫 publish seq = 1 | 추가 확인: 재시작만으로 lifecycle reset |
+| FileStorage 서버 재시작 | 재시작 후 기존 stream 유지, 다음 publish seq = 11 | 비교군: seq continuity 유지 |
 | 타임스탬프 lifecycle | Purge/delete+recreate와 무관하게 payload timestamp 증가 | H3 lifecycle 장점 성립 |
 | 타임스탬프 클록 한계 | 동일 ms 동률, 5초 과거 스큐 모두 `>` 비교에서 반영 실패 | 한계 재현됨 |
 
@@ -145,6 +176,8 @@ docker compose up -d
 1. `per-entity version`이 가장 안전한 기준이다. 엔티티의 논리적 변경 순서를 직접 표현하기 때문이다. 단, 발행 시 직전 버전을 읽거나 DB write와 함께 version을 증가시키는 설계가 필요하다.
 2. JetStream stream seq는 스트림 수명 안에서는 편리하고 단조 증가한다. NATS 2.12.2 기준 Purge는 seq를 1로 되돌리지 않으므로 “Purge 때문에 버전이 리셋된다”는 걱정은 기각된다.
 3. 진짜 위험은 stream delete/recreate, 마이그레이션, DR, 운영 실수처럼 스트림 자체가 새로 만들어지는 경우다. 이때 stream seq가 1부터 다시 시작해 DB에 저장된 마지막 seq보다 낮아지고, `incoming > stored` 비교는 새 이벤트를 조용히 전건 무시한다.
-4. 타임스탬프는 스트림 수명과 분리되어 seq 리셋 문제는 피하지만, 클록 스큐·동률·역행이라는 별도 약점을 가진다. 단일 발행자, 충분한 해상도, NTP/monotonic discipline이 전제될 때만 차선책으로 쓸 수 있다.
+4. MemoryStorage stream은 더 위험하다. NATS 서버 프로세스 재시작만으로 stream 자체가 사라질 수 있고, 같은 stream을 다시 만들면 seq가 1부터 시작한다. 즉 MemoryStorage에서는 운영상 “서버 재시작”도 사실상 stream lifecycle reset 사고로 이어질 수 있다.
+5. FileStorage stream은 이번 재시작 실험에서 stream 상태와 last_seq를 유지했고 다음 publish가 seq=11로 이어졌다. 다만 FileStorage도 delete/recreate나 마이그레이션/DR에서 새 stream으로 갈아끼우면 seq 리셋 위험을 피하지 못한다.
+6. 타임스탬프는 스트림 수명과 분리되어 seq 리셋 문제는 피하지만, 클록 스큐·동률·역행이라는 별도 약점을 가진다. 단일 발행자, 충분한 해상도, NTP/monotonic discipline이 전제될 때만 차선책으로 쓸 수 있다.
 
-한 줄 결론: “타임스탬프가 제일 안전”은 절반만 맞다. 가장 안전한 것은 엔티티가 들고 가는 per-entity version이고, JetStream seq는 스트림 수명, 타임스탬프는 클록이라는 서로 다른 약점을 가진다.
+한 줄 결론: “타임스탬프가 제일 안전”은 절반만 맞다. 가장 안전한 것은 엔티티가 들고 가는 per-entity version이고, JetStream seq는 스트림 수명과 저장 방식, 타임스탬프는 클록이라는 서로 다른 약점을 가진다.
