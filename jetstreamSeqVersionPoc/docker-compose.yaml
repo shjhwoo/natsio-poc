@@ -1,0 +1,13 @@
+services:
+  nats-server:
+    image: nats:2.12.2
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf
+      - jetstream-data:/starfruit/cluster
+    command: "-c /etc/nats/nats.conf"
+
+volumes:
+  jetstream-data:

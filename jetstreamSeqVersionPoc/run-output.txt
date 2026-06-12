@@ -1,0 +1,122 @@
+=== JetStream stream seq를 버전 번호로 써도 되는가 PoC ===
+NATS Server: 2.12.2
+nats.go: v1.52.0
+Subjects: File=order.updated.file, Memory=order.updated.memory, Timestamp=order.updated.ts
+
+==============================================================================
+Part 1 — JetStream stream seq 거동 (FileStorage, stream=VERSION_SRC_TEST_FILE)
+==============================================================================
+
+--- FileStorage S-1 정상 단조 증가 ---
+   StreamInfo[created]: msgs=0 first_seq=0 last_seq=0
+   published stream seqs: [1 2 3 4 5 6 7 8 9 10]
+   StreamInfo[after publish 10]: msgs=10 first_seq=1 last_seq=10
+
+--- FileStorage S-2 전체 Purge 후 seq ---
+   StreamInfo[before full purge]: msgs=10 first_seq=1 last_seq=10
+   StreamInfo[after full purge]: msgs=0 first_seq=11 last_seq=10
+   first seq after full purge: 11
+   StreamInfo[after republish]: msgs=1 first_seq=11 last_seq=11
+
+--- FileStorage S-2 변형 Purge(WithPurgeKeep(2)) 후 seq ---
+   StreamInfo[before purge keep]: msgs=10 first_seq=1 last_seq=10
+   StreamInfo[after purge keep=2]: msgs=2 first_seq=9 last_seq=10
+   first seq after purge keep: 11
+   StreamInfo[after republish]: msgs=3 first_seq=9 last_seq=11
+
+--- FileStorage S-2 변형 Purge(WithPurgeSequence(6)) 후 seq ---
+   StreamInfo[before purge seq]: msgs=10 first_seq=1 last_seq=10
+   StreamInfo[after purge seq=6]: msgs=5 first_seq=6 last_seq=10
+   first seq after purge sequence: 11
+   StreamInfo[after republish]: msgs=6 first_seq=6 last_seq=11
+
+--- FileStorage S-3 delete + recreate 후 seq ---
+   StreamInfo[before delete]: msgs=10 first_seq=1 last_seq=10
+   StreamInfo[after recreate]: msgs=0 first_seq=0 last_seq=0
+   first seq after delete+recreate: 1
+   StreamInfo[after republish]: msgs=1 first_seq=1 last_seq=1
+
+--- FileStorage S-4 실패 모드: 저장 version 10 > 새 seq ---
+   DB 저장 last_processed_version(stream seq) = 10
+   StreamInfo[after recreate]: msgs=0 first_seq=0 last_seq=0
+   seq=1 <= stored(10) => IGNORE
+   seq=2 <= stored(10) => IGNORE
+   seq=3 <= stored(10) => IGNORE
+
+==============================================================================
+Part 1 — JetStream stream seq 거동 (MemoryStorage, stream=VERSION_SRC_TEST_MEMORY)
+==============================================================================
+
+--- MemoryStorage S-1 정상 단조 증가 ---
+   StreamInfo[created]: msgs=0 first_seq=0 last_seq=0
+   published stream seqs: [1 2 3 4 5 6 7 8 9 10]
+   StreamInfo[after publish 10]: msgs=10 first_seq=1 last_seq=10
+
+--- MemoryStorage S-2 전체 Purge 후 seq ---
+   StreamInfo[before full purge]: msgs=10 first_seq=1 last_seq=10
+   StreamInfo[after full purge]: msgs=0 first_seq=11 last_seq=10
+   first seq after full purge: 11
+   StreamInfo[after republish]: msgs=1 first_seq=11 last_seq=11
+
+--- MemoryStorage S-2 변형 Purge(WithPurgeKeep(2)) 후 seq ---
+   StreamInfo[before purge keep]: msgs=10 first_seq=1 last_seq=10
+   StreamInfo[after purge keep=2]: msgs=2 first_seq=9 last_seq=10
+   first seq after purge keep: 11
+   StreamInfo[after republish]: msgs=3 first_seq=9 last_seq=11
+
+--- MemoryStorage S-2 변형 Purge(WithPurgeSequence(6)) 후 seq ---
+   StreamInfo[before purge seq]: msgs=10 first_seq=1 last_seq=10
+   StreamInfo[after purge seq=6]: msgs=5 first_seq=6 last_seq=10
+   first seq after purge sequence: 11
+   StreamInfo[after republish]: msgs=6 first_seq=6 last_seq=11
+
+--- MemoryStorage S-3 delete + recreate 후 seq ---
+   StreamInfo[before delete]: msgs=10 first_seq=1 last_seq=10
+   StreamInfo[after recreate]: msgs=0 first_seq=0 last_seq=0
+   first seq after delete+recreate: 1
+   StreamInfo[after republish]: msgs=1 first_seq=1 last_seq=1
+
+--- MemoryStorage S-4 실패 모드: 저장 version 10 > 새 seq ---
+   DB 저장 last_processed_version(stream seq) = 10
+   StreamInfo[after recreate]: msgs=0 first_seq=0 last_seq=0
+   seq=1 <= stored(10) => IGNORE
+   seq=2 <= stored(10) => IGNORE
+   seq=3 <= stored(10) => IGNORE
+
+==============================================================================
+Part 2 — 타임스탬프 기반 (VERSION_TS_TEST)
+==============================================================================
+
+--- Timestamp T-1 Purge/delete+recreate를 가로질러 타임스탬프 증가 ---
+   publish T1-before-purge      stream_seq=1 payload_ts=1781272759859322400
+   StreamInfo[after purge]: msgs=0 first_seq=2 last_seq=1
+   publish T1-after-purge       stream_seq=2 payload_ts=1781272759863003500
+   StreamInfo[after recreate]: msgs=0 first_seq=0 last_seq=0
+   publish T1-after-recreate    stream_seq=1 payload_ts=1781272759867986600
+   before=1781272759859322400 afterPurge=1781272759863003500 afterRecreate=1781272759867986600
+
+--- Timestamp T-2-1 같은 millisecond 동률 ---
+   DB stored_ms=1781272759867, incoming_ms=1781272759867, comparison incoming > stored => false
+
+--- Timestamp T-2-2 클록 스큐/역행 ---
+   실제로 더 늦게 온 이벤트지만 payload timestamp를 5초 과거로 설정
+   DB stored_ns=1781272759867986600, incoming_ns=1781272754867986600, comparison incoming > stored => false
+
+==============================================================================
+결과 요약
+==============================================================================
+✓ FileStorage S-1                    expected=1..10              actual=[1 2 3 4 5 6 7 8 9 10] 기준선: stream seq는 발행마다 단조 증가
+✓ FileStorage S-2 full purge         expected=11                 actual=11                 Purge는 last_seq를 초기화하지 않음
+✓ FileStorage S-2 keep=2             expected=11                 actual=11                 Keep 옵션도 다음 seq는 기존 last_seq+1
+✓ FileStorage S-2 seq=6              expected=11                 actual=11                 Sequence 옵션도 last_seq는 유지
+✓ FileStorage S-3 recreate           expected=1                  actual=1                  스트림 재생성은 seq를 1부터 다시 시작
+✓ FileStorage S-4 silent drop        expected=applied=0 ignored=3 actual=applied=0 ignored=3 seqs=[1 2 3] 에러 없이 새 이벤트 전건 무시 재현
+✓ MemoryStorage S-1                  expected=1..10              actual=[1 2 3 4 5 6 7 8 9 10] 기준선: stream seq는 발행마다 단조 증가
+✓ MemoryStorage S-2 full purge       expected=11                 actual=11                 Purge는 last_seq를 초기화하지 않음
+✓ MemoryStorage S-2 keep=2           expected=11                 actual=11                 Keep 옵션도 다음 seq는 기존 last_seq+1
+✓ MemoryStorage S-2 seq=6            expected=11                 actual=11                 Sequence 옵션도 last_seq는 유지
+✓ MemoryStorage S-3 recreate         expected=1                  actual=1                  스트림 재생성은 seq를 1부터 다시 시작
+✓ MemoryStorage S-4 silent drop      expected=applied=0 ignored=3 actual=applied=0 ignored=3 seqs=[1 2 3] 에러 없이 새 이벤트 전건 무시 재현
+✓ Timestamp T-1 lifecycle            expected=before < afterPurge < afterRecreate actual=before=1781272759859322400 afterPurge=1781272759863003500 afterRecreate=1781272759867986600 스트림 lifecycle와 무관하게 payload timestamp는 유지
+✓ Timestamp T-2 equal ms             expected=incoming == stored, > comparison false actual=stored=1781272759867 incoming=1781272759867 apply=false 동률에서는 > 비교로 최신 이벤트를 구분할 수 없음
+✓ Timestamp T-2 skew                 expected=later event can have smaller ts, > comparison false actual=stored=1781272759867986600 incoming=1781272754867986600 apply=false 클록 스큐/역행 시 최신 이벤트도 무시될 수 있음
