@@ -1,0 +1,35 @@
+services:
+  n1:
+    image: nats:2.12.2
+    ports:
+      - "4322:4222"
+      - "8322:8222"
+    volumes:
+      - ./n1.conf:/etc/nats/nats.conf
+      - n1-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats.conf"]
+
+  n2:
+    image: nats:2.12.2
+    ports:
+      - "4323:4222"
+      - "8323:8222"
+    volumes:
+      - ./n2.conf:/etc/nats/nats.conf
+      - n2-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats.conf"]
+
+  n3:
+    image: nats:2.12.2
+    ports:
+      - "4324:4222"
+      - "8324:8222"
+    volumes:
+      - ./n3.conf:/etc/nats/nats.conf
+      - n3-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats.conf"]
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:

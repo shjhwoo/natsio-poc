@@ -1,0 +1,51 @@
+2026/06/27 16:17:25.131279 === JetStream/Consumer 설정 마이그레이션 PoC ===
+2026/06/27 16:17:25.223933 NATS server version: 2.12.2
+2026/06/27 16:17:25.223933 nats.go version: v1.52.0
+2026/06/27 16:17:25.223933 테스트 목표: WorkQueuePolicy -> InterestPolicy in-place 변경 가능 여부와 강제 재생성 위험 확인
+2026/06/27 16:17:25.223933 
+------------------------------------------------------------
+2026/06/27 16:17:25.223933 Phase A - consumer 없이 stream retention만 WorkQueue -> Interest 변경 시도
+2026/06/27 16:17:25.223933 ------------------------------------------------------------
+2026/06/27 16:17:30.233119 stream 생성: DATASINK_ONLY retention=WorkQueuePolicy storage=File replicas=3 subjects=[migration.streamonly.>]
+2026/06/27 16:17:30.238964 publish subject=migration.streamonly.event body=stream-only-001 seq=4
+2026/06/27 16:17:30.242747 publish subject=migration.streamonly.event body=stream-only-002 seq=5
+2026/06/27 16:17:30.244395 publish subject=migration.streamonly.event body=stream-only-003 seq=6
+2026/06/27 16:17:30.248058 [변경 전] stream=DATASINK_ONLY retention=WorkQueuePolicy msgs=6 first_seq=1 last_seq=6 consumers=0
+2026/06/27 16:17:30.250790 retention 변경 결과: 실패: nats: API error: code=500 err_code=10052 description=stream configuration update can not change retention policy to/from workqueue
+2026/06/27 16:17:30.255931 [변경 후] stream=DATASINK_ONLY retention=WorkQueuePolicy msgs=6 first_seq=1 last_seq=6 consumers=0
+2026/06/27 16:17:30.256450 
+------------------------------------------------------------
+2026/06/27 16:17:30.256450 Phase B - 운영 중 WorkQueue stream + durable consumer 상태에서 retention 변경 시도
+2026/06/27 16:17:30.256450 ------------------------------------------------------------
+2026/06/27 16:17:30.340719 stream 생성: DATASINK retention=WorkQueuePolicy storage=File replicas=3 subjects=[migration.datasink.>]
+2026/06/27 16:17:30.437617 consumer 준비: durable=DATASINK deliver=DeliverAllPolicy ack=AckExplicitPolicy maxAckPending=-1 maxDeliver=5
+2026/06/27 16:17:30.444022 publish subject=migration.datasink.event body=baseline-001 seq=1
+2026/06/27 16:17:30.448320 publish subject=migration.datasink.event body=baseline-002 seq=2
+2026/06/27 16:17:30.451234 publish subject=migration.datasink.event body=baseline-003 seq=3
+2026/06/27 16:17:30.455536 publish subject=migration.datasink.event body=baseline-004 seq=4
+2026/06/27 16:17:30.459200 publish subject=migration.datasink.event body=baseline-005 seq=5
+2026/06/27 16:17:30.462787 publish subject=migration.datasink.event body=baseline-006 seq=6
+2026/06/27 16:17:30.466971 [메시지 발행 후] stream=DATASINK retention=WorkQueuePolicy msgs=6 first_seq=1 last_seq=6 consumers=1
+2026/06/27 16:17:30.472086 [소비 전] consumer=DATASINK num_pending=6 num_ack_pending=0 ack_floor=0 delivered=0
+2026/06/27 16:17:30.481585 ack 완료 메시지: [stream_seq=1 data=baseline-001 stream_seq=2 data=baseline-002]
+2026/06/27 16:17:30.481909 ack 없이 보류한 메시지: [stream_seq=3 data=baseline-003 stream_seq=4 data=baseline-004]
+2026/06/27 16:17:30.485638 [2개 ack + 2개 no-ack 후] consumer=DATASINK num_pending=2 num_ack_pending=2 ack_floor=2 delivered=4
+2026/06/27 16:17:30.488719 running stream retention 변경 결과: 실패: nats: API error: code=500 err_code=10052 description=stream configuration update can not change retention policy to/from workqueue
+2026/06/27 16:17:30.496842 [변경 시도 후] stream=DATASINK retention=WorkQueuePolicy msgs=4 first_seq=3 last_seq=6 consumers=1
+2026/06/27 16:17:30.499904 [변경 시도 후] consumer=DATASINK num_pending=2 num_ack_pending=2 ack_floor=2 delivered=4
+2026/06/27 16:17:30.504286 기존 consumer CreateOrUpdate 결과: 성공 (하지만 stream retention은 그대로 WorkQueuePolicy)
+2026/06/27 16:17:30.504286 
+------------------------------------------------------------
+2026/06/27 16:17:30.504286 Phase C - retention 변경을 위해 delete/recreate를 강제로 하면 어떤 일이 생기는가
+2026/06/27 16:17:30.504286 ------------------------------------------------------------
+2026/06/27 16:17:30.511195 [delete 직전] stream=DATASINK retention=WorkQueuePolicy msgs=4 first_seq=3 last_seq=6 consumers=1
+2026/06/27 16:17:30.513944 [delete 직전] consumer=DATASINK num_pending=2 num_ack_pending=2 ack_floor=2 delivered=4
+2026/06/27 16:17:30.520556 stream DATASINK 삭제 완료
+2026/06/27 16:17:30.609733 stream 생성: DATASINK retention=InterestPolicy storage=File replicas=3 subjects=[migration.datasink.>]
+2026/06/27 16:17:30.685788 consumer 준비: durable=DATASINK deliver=DeliverAllPolicy ack=AckExplicitPolicy maxAckPending=-1 maxDeliver=5
+2026/06/27 16:17:30.687405 [InterestPolicy로 재생성 직후] stream=DATASINK retention=InterestPolicy msgs=0 first_seq=0 last_seq=0 consumers=1
+2026/06/27 16:17:30.688456 [consumer 재생성 직후] consumer=DATASINK num_pending=0 num_ack_pending=0 ack_floor=0 delivered=0
+2026/06/27 16:17:30.690032 재생성 후 첫 publish seq=1
+2026/06/27 16:17:30.691106 [재발행 후] stream=DATASINK retention=InterestPolicy msgs=1 first_seq=1 last_seq=1 consumers=1
+2026/06/27 16:17:32.693986 재생성 후 consumer가 받은 메시지: [stream_seq=1 data=after-recreate-001]
+2026/06/27 16:17:32.693986 === PoC 완료 ===

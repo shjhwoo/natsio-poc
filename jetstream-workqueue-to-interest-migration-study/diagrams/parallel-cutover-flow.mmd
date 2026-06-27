@@ -1,0 +1,37 @@
+flowchart TD
+    A[Phase 0<br/>사전 확인] --> B[Phase 1<br/>새 Interest stream 생성<br/>새 durable consumer 생성<br/>publisher subject switch 준비]
+    B --> C[Phase 2<br/>사전 검증/관찰<br/>new consumer shadow 확인<br/>새 subject 테스트 메시지 확인]
+
+    C --> D{사전 검증 통과?}
+    D -- 아니오 --> D1[중단<br/>publisher는 아직 old subject 유지<br/>원인 분석 후 재시도]
+    D -- 예 --> E[Phase 3 야간 cutover<br/>publisher old subject → new subject 전환<br/>new consumer 주 처리 경로 승격<br/>old consumer 유지]
+
+    E --> F{cutover 후<br/>old subject 신규 발행 0 확인?}
+    F -- 아니오 --> F1[old publisher 잔존/우회 경로 점검<br/>설정/배포 수정]
+    F1 --> G
+    F -- 예 --> G[Phase 4 backlog drain 관찰<br/>old stream에는 과거 backlog만 남음<br/>old consumer가 잔량 소비]
+
+    G --> H{old stream msgs = 0<br/>and old consumer pending = 0 ?}
+    H -- 아니오 --> H1[계속 관찰<br/>poison message / ack 누락 / retry loop 점검]
+    H1 --> G
+    H -- 예 --> I{new consumer 안정화 확인?}
+
+    I -- 아니오 --> I1[old는 아직 삭제 금지<br/>new 경로 문제 분석]
+    I1 --> J
+    I -- 예 --> J[Phase 5 old 경로 제거<br/>old publisher 잔존 재확인<br/>old consumer 제거<br/>old stream 제거]
+
+    J --> K[종료 상태<br/>신규 메시지는 new stream으로만 유입]
+
+    E -. 문제 발생 .-> R1{publisher를 old subject로<br/>롤백 가능?}
+    R1 -- 예 --> R2[롤백 수행<br/>publisher를 old subject로 복귀<br/>old consumer로 계속 처리]
+    R1 -- 아니오 --> R3[부분 롤백만 가능<br/>new 경로 문제 격리 후 수정]
+
+    classDef phase fill:#e8f0fe,stroke:#4a73c9,color:#111;
+    classDef decision fill:#fff4cc,stroke:#b38f00,color:#111;
+    classDef stop fill:#fde7e9,stroke:#c23b3b,color:#111;
+    classDef done fill:#e6f4ea,stroke:#2e7d32,color:#111;
+
+    class A,B,C,E,G,J phase;
+    class D,F,H,I,R1 decision;
+    class D1,F1,H1,I1,R2,R3 stop;
+    class K done;
