@@ -1,0 +1,13 @@
+services:
+  nats:
+    image: nats:2.12.2
+    ports:
+      - "4422:4222"
+      - "8422:8222"
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf
+      - js-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats.conf"]
+
+volumes:
+  js-data:
