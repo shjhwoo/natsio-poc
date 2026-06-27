@@ -1,0 +1,22 @@
+{
+  "operator_seed": "SOAPX7WKEVZFLTR4R4FBSNDWPJFRL5RCAB2DBRJSTADUEU6URSXAA5P6GM",
+  "service_a": {
+    "name": "SERVICEA",
+    "account_seed": "SAAHPC4AVQK4CHYP2QV4A6M7EAWB3RWLDAMUC2XNDEEKHU2QYETX77ITMY",
+    "account_pub": "ADL5VIN2OZMNKYOWETDFHLKRILTZW4ZDKJPH5VVVLESCGRMOES4TSNQS",
+    "account_jwt": "eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJJQkpRTEsyUktVRUEyUzVYVkZYSFJOU1o0U1FMNDRXWFdYNjVFTTRCTjZHUVpVNkZNSFdRIiwiaWF0IjoxNzgyNDAwODcxLCJpc3MiOiJPQ09GNkRITEFDWUNZTFM2Vlk1N1hXUEtWRVFQVU1aN1lYTFlaQkZQRDJGM1czVzVUTzJWNVNHSiIsIm5hbWUiOiJTRVJWSUNFQSIsInN1YiI6IkFETDVWSU4yT1pNTktZT1dFVERGSExLUklMVFpXNFpES0pQSDVWVlZMRVNDR1JNT0VTNFRTTlFTIiwibmF0cyI6eyJsaW1pdHMiOnsic3VicyI6LTEsImRhdGEiOi0xLCJwYXlsb2FkIjotMSwiaW1wb3J0cyI6LTEsImV4cG9ydHMiOi0xLCJ3aWxkY2FyZHMiOnRydWUsImNvbm4iOi0xLCJsZWFmIjotMX0sImRlZmF1bHRfcGVybWlzc2lvbnMiOnsicHViIjp7fSwic3ViIjp7fX0sImF1dGhvcml6YXRpb24iOnt9LCJ0eXBlIjoiYWNjb3VudCIsInZlcnNpb24iOjJ9fQ.hVi5gxo5Y2xus6je2lUmvXCq3PtCx_O0_B-7y-z40PrFTJhFCtehTW_lwxfJfXwauGHyMMqDQxC9YraUEQJ5DQ",
+    "allowed_pub": [
+      "_INBOX.\u003e",
+      "servicea.\u003e",
+      "svc.echo"
+    ],
+    "allowed_sub": [
+      "_INBOX.\u003e",
+      "servicea.\u003e",
+      "svc.echo"
+    ],
+    "user1_creds": "generated\\creds\\servicea-user.creds",
+    "user1_name": "servicea-user",
+    "subject_probe": "servicea.runtime.check"
+  }
+}

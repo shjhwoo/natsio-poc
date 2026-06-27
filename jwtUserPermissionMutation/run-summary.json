@@ -1,0 +1,21 @@
+{
+  "single": {
+    "baseline_base_allowed_extra_denied": true,
+    "existing_v1_still_denied_extra_after_v2": true,
+    "new_v2_allowed_extra_without_restart": true,
+    "existing_v2_still_allowed_base_after_v3": true,
+    "new_v3_denied_base_allowed_extra_without_restart": true
+  },
+  "cluster": {
+    "node1_baseline_ok": true,
+    "node2_baseline_ok": true,
+    "node3_baseline_ok": true,
+    "node1_v2_extra_allowed_without_restart": true,
+    "node2_v2_extra_allowed_without_restart": true,
+    "node3_v2_extra_allowed_without_restart": true,
+    "node1_v3_base_denied_extra_allowed_without_restart": true,
+    "node2_v3_base_denied_extra_allowed_without_restart": true,
+    "node3_v3_base_denied_extra_allowed_without_restart": true,
+    "existing_v2_connection_kept_old_permissions": true
+  }
+}

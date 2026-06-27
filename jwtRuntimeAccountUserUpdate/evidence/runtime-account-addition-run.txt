@@ -1,0 +1,12 @@
+=== 운영 중 신규 Account/User 추가 시 서버 재시작 필요 여부 PoC ===
+NATS Server target: nats://127.0.0.1:4222
+nats.go: v1.52.0
+
+==============================================================================
+결과 요약
+==============================================================================
+✓ Phase A baseline         expected=SERVICEA user connect ok actual=connect ok + publish ok          preload된 account/user는 정상 접속
+✓ Phase B existing account new user expected=connect without reload   actual=connect ok without reload        기존 account를 서버가 이미 신뢰하면 새 user는 즉시 검증 가능해야 함
+✓ Phase C new account before reload expected=connect fails            actual=nats: Authorization Violation    resolver_preload에 없는 account는 인증 불가
+✓ Phase D new account after reload expected=connect after reload     actual=connect ok after reload          새 account는 config reload 후 반영 가능해야 함
+✓ Phase E reload vs restart expected=startedAt unchanged + old conn usable actual=container=6292203dab97 startedAt(before=2026-06-25T15:21:28.378515676Z after=2026-06-25T15:21:28.378515676Z) connStatus=CONNECTED->CONNECTED reload가 restart가 아니면 컨테이너 시작 시각이 유지되어야 함

@@ -1,0 +1,11 @@
+=== User 권한 추가/삭제 runtime PoC (single) ===
+nats.go: v1.52.0
+
+==============================================================================
+결과 요약 (single)
+==============================================================================
+✓ node1 baseline                 expected=base allow extra deny        actual=pub(base=allow extra=deny) sub(base=allow extra=deny) 기본 권한 상태 확인
+✓ existing v1 after add          expected=base allow extra still deny  actual=pub(base=allow extra=deny) sub(base=allow extra=deny) 기존 연결은 자동 재권한평가되지 않을 수 있음
+✓ node1 new v2 after add         expected=base allow extra allow       actual=pub(base=allow extra=allow) sub(base=allow extra=allow) 새 연결은 restart/reload 없이 추가 권한 사용 가능해야 함
+✓ existing v2 after remove       expected=base still allow extra allow actual=pub(base=allow extra=allow) sub(base=allow extra=allow) 이미 연결된 세션은 삭제된 권한을 계속 가질 수 있음
+✓ node1 new v3 after remove      expected=base deny extra allow        actual=pub(base=deny extra=allow) sub(base=deny extra=allow) 새 연결은 restart/reload 없이 삭제된 권한 상태를 반영해야 함

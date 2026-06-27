@@ -1,0 +1,16 @@
+{
+  "scope": "single-node runtime account/user addition",
+  "verified": true,
+  "findings": {
+    "existing_account_new_user_without_reload": true,
+    "new_account_before_reload_authorization_violation": true,
+    "new_account_after_reload_connects": true,
+    "reload_not_restart_started_at_unchanged": true,
+    "existing_connection_survived_reload": true
+  },
+  "evidence_files": [
+    "readme.md",
+    "run-output.txt",
+    "VERIFIED_SINGLE_NODE_RESULTS.md"
+  ]
+}

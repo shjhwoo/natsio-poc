@@ -1,0 +1,14 @@
+services:
+  nats-server:
+    image: nats:2.12.2
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf
+      - ./generated/auth:/etc/nats/auth
+      - nats_data:/data
+    command: ["-c", "/etc/nats/nats.conf"]
+
+volumes:
+  nats_data:
